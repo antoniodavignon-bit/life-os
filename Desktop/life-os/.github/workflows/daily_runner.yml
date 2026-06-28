@@ -1,0 +1,34 @@
+name: Daily Task Generator
+
+on:
+  schedule:
+    # Runs every day at 6:00 AM UTC — adjust to your timezone
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    # Also allows manual trigger from GitHub Actions tab
+
+jobs:
+  generate-daily-tasks:
+    name: Generate Daily Task Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Run Daily Task Generator
+        run: |
+          echo "=============================="
+          echo "  ⚡ Life OS — Daily Task Run"
+          echo "  $(date '+%A, %B %d %Y')"
+          echo "=============================="
+          python Automation_Scripts/daily_task_generator.py
+
+      - name: Run Profit Tracker Report
+        run: |
+          python Automation_Scripts/profit_tracker.py
