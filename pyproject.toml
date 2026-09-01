@@ -12,6 +12,9 @@ authors = [
     {name = "Antonio Davignon"}
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
