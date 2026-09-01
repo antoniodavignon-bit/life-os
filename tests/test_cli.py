@@ -34,7 +34,10 @@ def test_profit_report_is_friendly_on_first_run(tmp_path, capsys):
 def test_profit_add_persists_across_invocations(tmp_path, capsys):
     state = tmp_path / "state.json"
 
-    code, _, _ = _run(capsys, ["--state-file", str(state), "profit", "add", "250", "--note", "Sale"])
+    code, _, _ = _run(
+        capsys,
+        ["--state-file", str(state), "profit", "add", "250", "--note", "Sale"],
+    )
     assert code == 0
 
     code, _, _ = _run(capsys, ["--state-file", str(state), "profit", "add", "100"])
@@ -103,12 +106,18 @@ def test_review_log_records_and_reports_carry_forward(tmp_path, capsys):
     code, out, _ = _run(
         capsys,
         [
-            "--state-file", str(state),
-            "review", "log",
-            "--done", "posted content",
-            "--done", "called supplier",
-            "--missed", "wrote email sequence",
-            "--priority", "ship the landing page",
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "posted content",
+            "--done",
+            "called supplier",
+            "--missed",
+            "wrote email sequence",
+            "--priority",
+            "ship the landing page",
         ],
     )
 
@@ -150,12 +159,38 @@ def test_review_week_is_friendly_when_nothing_logged(tmp_path, capsys):
 def test_review_week_aggregates_across_invocations(tmp_path, capsys):
     state = tmp_path / "state.json"
 
-    _run(capsys, ["--state-file", str(state), "review", "log",
-                  "--done", "a", "--done", "b", "--missed", "c",
-                  "--priority", "first priority"])
-    _run(capsys, ["--state-file", str(state), "review", "log",
-                  "--done", "d", "--missed", "e",
-                  "--priority", "second priority"])
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "a",
+            "--done",
+            "b",
+            "--missed",
+            "c",
+            "--priority",
+            "first priority",
+        ],
+    )
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "d",
+            "--missed",
+            "e",
+            "--priority",
+            "second priority",
+        ],
+    )
 
     code, out, _ = _run(capsys, ["--state-file", str(state), "review", "week"])
 
@@ -170,8 +205,21 @@ def test_review_week_ignores_reviews_older_than_the_window(tmp_path, capsys):
     state = tmp_path / "state.json"
     old = (date.today() - timedelta(days=30)).isoformat()
 
-    _run(capsys, ["--state-file", str(state), "review", "log",
-                  "--done", "ancient task", "--priority", "old priority", "--date", old])
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "ancient task",
+            "--priority",
+            "old priority",
+            "--date",
+            old,
+        ],
+    )
 
     code, out, _ = _run(capsys, ["--state-file", str(state), "review", "week"])
 

@@ -1,4 +1,5 @@
 from datetime import date
+from itertools import pairwise
 
 import pytest
 
@@ -21,7 +22,7 @@ def test_milestones_are_consecutive_with_no_gaps_or_overlaps():
 
     milestones = generate_milestones(goal)
 
-    for earlier, later in zip(milestones, milestones[1:]):
+    for earlier, later in pairwise(milestones):
         assert (later.start_date - earlier.end_date).days == 1
 
 
