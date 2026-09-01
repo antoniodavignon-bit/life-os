@@ -61,6 +61,30 @@ Launch Life OS  [business]
   ...
 ```
 
+Close out the day and carry unfinished work forward:
+
+```bash
+$ life-os review log \
+    --done "posted content" --done "called supplier" \
+    --missed "wrote email sequence" \
+    --priority "ship the landing page"
+Review logged for 2026-09-01
+  Completed: 2/3  (67%)
+
+  Carrying forward to tomorrow (1):
+    - wrote email sequence
+
+  Tomorrow's #1: ship the landing page
+
+$ life-os review week
+Last 7 days
+==============================================
+  2026-09-01  2/3 done  ( 67%)
+  2026-09-02  1/2 done  ( 50%)
+==============================================
+  2 reviews  |  3 completed  |  2 missed  |  60% completion
+```
+
 Data lives in `~/.life-os/state.json` by default; override with
 `--state-file`.
 
@@ -118,10 +142,18 @@ scoped, shippable unit of work.
 - **Mission 001 — Core Foundation** ✅ src-layout package, all four PRD
   modules, pytest, CI, ADR process
 - **Mission 002 — Usable System** ✅ persistence + CLI entry point
-- **Mission 003 — Review loop in the CLI** — log daily reviews, see
-  carry-forward tasks and weekly completion rates from the terminal
+- **Mission 003 — Closed Loop** ✅ daily reviews in the CLI, carry-forward
+  tasks, weekly completion rates, versioned state migration
 - **Future — AI assistant layer** — generate tasks from goal context,
   surface execution patterns, answer "what should I do next?"
+
+### State file versioning
+
+The state file carries a `schema_version`. Version 1 (profit only)
+upgrades cleanly to version 2 (adds reviews) on read. A version this
+build does not recognize is rejected rather than partially read — a
+file written by a newer build must never be silently loaded and saved
+back with fields dropped.
 
 ## License
 
