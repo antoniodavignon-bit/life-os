@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import pytest
 
 from life_os.cli import main
@@ -93,3 +95,86 @@ def test_missing_subcommand_exits_nonzero(capsys):
         main([])
 
     assert exc.value.code != 0
+
+
+def test_review_log_records_and_reports_carry_forward(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    code, out, _ = _run(
+        capsys,
+        [
+            "--state-file", str(state),
+            "review", "log",
+            "--done", "posted content",
+            "--done", "called supplier",
+            "--missed", "wrote email sequence",
+            "--priority", "ship the landing page",
+        ],
+    )
+
+    assert code == 0
+    assert "2/3" in out
+    assert "67%" in out
+    assert "wrote email sequence" in out
+    assert "ship the landing page" in out
+
+
+def test_review_log_requires_a_priority(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    with pytest.raises(SystemExit):
+        main(["--state-file", str(state), "review", "log", "--done", "something"])
+
+
+def test_review_log_rejects_an_empty_priority(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    code, _, err = _run(
+        capsys,
+        ["--state-file", str(state), "review", "log", "--priority", "   "],
+    )
+
+    assert code == 1
+    assert "error:" in err
+
+
+def test_review_week_is_friendly_when_nothing_logged(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "review", "week"])
+
+    assert code == 0
+    assert "No reviews logged" in out
+
+
+def test_review_week_aggregates_across_invocations(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    _run(capsys, ["--state-file", str(state), "review", "log",
+                  "--done", "a", "--done", "b", "--missed", "c",
+                  "--priority", "first priority"])
+    _run(capsys, ["--state-file", str(state), "review", "log",
+                  "--done", "d", "--missed", "e",
+                  "--priority", "second priority"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "review", "week"])
+
+    assert code == 0
+    assert "2 reviews" in out
+    assert "3 completed" in out
+    assert "2 missed" in out
+    assert "second priority" in out
+
+
+def test_review_week_ignores_reviews_older_than_the_window(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    old = (date.today() - timedelta(days=30)).isoformat()
+
+    _run(capsys, ["--state-file", str(state), "review", "log",
+                  "--done", "ancient task", "--priority", "old priority", "--date", old])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "review", "week"])
+
+    assert code == 0
+    assert "No reviews logged" in out
+    assert "ancient task" not in out

@@ -13,17 +13,20 @@ Usage:
 
 import argparse
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from life_os.goals import Goal, current_milestone, generate_milestones
+from life_os.review import DailyReview, carry_forward, summarize_week
 from life_os.storage import (
     DEFAULT_STATE_PATH,
     StorageError,
     load_state,
     save_state,
 )
-from life_os.tasks import generate_tasks
+from life_os.tasks import Task, generate_tasks
+
+REVIEW_WINDOW_DAYS = 7
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -71,6 +74,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="start date (default: today)",
     )
     plan_cmd.add_argument("--days", type=int, default=90, help="goal length in days")
+
+    review_cmd = subcommands.add_parser("review", help="close out the day")
+    review_sub = review_cmd.add_subparsers(dest="review_command", required=True)
+
+    log_cmd = review_sub.add_parser("log", help="log an end-of-day review")
+    log_cmd.add_argument(
+        "--done", action="append", default=[], metavar="TASK", help="a task you completed"
+    )
+    log_cmd.add_argument(
+        "--missed", action="append", default=[], metavar="TASK", help="a task you did not finish"
+    )
+    log_cmd.add_argument(
+        "--priority", required=True, help="tomorrow's single most important task"
+    )
+    log_cmd.add_argument("--note", default="", help="anything worth remembering")
+    log_cmd.add_argument(
+        "--date",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="review date (default: today)",
+    )
+
+    review_sub.add_parser("week", help="show the last 7 days of reviews")
 
     return parser
 
@@ -143,6 +170,73 @@ def _run_goals(args) -> int:
     return 0
 
 
+def _run_review(args) -> int:
+    state = load_state(args.state_file)
+
+    if args.review_command == "log":
+        review = DailyReview(
+            review_date=args.date or date.today(),
+            completed=[Task(title=t, category="completed") for t in args.done],
+            incomplete=[Task(title=t, category="carried") for t in args.missed],
+            top_priority_tomorrow=args.priority,
+            note=args.note,
+        )
+        state.reviews.append(review)
+        save_state(state, args.state_file)
+
+        rate = review.completion_rate * 100
+        print(f"Review logged for {review.review_date}")
+        print(f"  Completed: {len(review.completed)}/{review.total_tasks}  ({rate:.0f}%)")
+
+        carried = carry_forward(review)
+        if carried:
+            print(f"\n  Carrying forward to tomorrow ({len(carried)}):")
+            for task in carried:
+                print(f"    - {task.title}")
+
+        print(f"\n  Tomorrow's #1: {review.top_priority_tomorrow}")
+        return 0
+
+    # week
+    cutoff = date.today() - timedelta(days=REVIEW_WINDOW_DAYS - 1)
+    recent = sorted(
+        (r for r in state.reviews if r.review_date >= cutoff),
+        key=lambda r: r.review_date,
+    )
+
+    if not recent:
+        print(f"No reviews logged in the last {REVIEW_WINDOW_DAYS} days.")
+        print('Log one with: life-os review log --done "..." --priority "..."')
+        return 0
+
+    summary = summarize_week(recent)
+
+    print(f"Last {REVIEW_WINDOW_DAYS} days")
+    print("=" * 46)
+    for review in recent:
+        rate = review.completion_rate * 100
+        print(
+            f"  {review.review_date}  "
+            f"{len(review.completed)}/{review.total_tasks} done  ({rate:>3.0f}%)"
+        )
+    print("=" * 46)
+    print(
+        f"  {summary.reviews_logged} reviews  |  "
+        f"{summary.tasks_completed} completed  |  "
+        f"{summary.tasks_missed} missed  |  "
+        f"{summary.completion_rate * 100:.0f}% completion"
+    )
+
+    latest = recent[-1]
+    carried = carry_forward(latest)
+    if carried:
+        print(f"\n  Still carrying forward from {latest.review_date}:")
+        for task in carried:
+            print(f"    - {task.title}")
+    print(f"\n  Next up: {latest.top_priority_tomorrow}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
     parser = _build_parser()
@@ -152,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         "tasks": _run_tasks,
         "profit": _run_profit,
         "goals": _run_goals,
+        "review": _run_review,
     }
 
     try:

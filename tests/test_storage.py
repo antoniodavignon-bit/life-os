@@ -1,9 +1,11 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
 from life_os.profit import ProfitTracker
+from life_os.review import DailyReview
+from life_os.tasks import Task
 from life_os.storage import (
     AppState,
     StorageError,
@@ -85,6 +87,71 @@ def test_malformed_entry_raises_storage_error(tmp_path):
     path = tmp_path / "state.json"
     path.write_text(
         json.dumps({"schema_version": 1, "profit_entries": [{"amount": "abc"}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageError):
+        load_state(path)
+
+
+def _review(day: int = 1, done: int = 2, missed: int = 1) -> DailyReview:
+    return DailyReview(
+        review_date=date(2026, 9, day),
+        completed=[Task(title=f"done {i}", category="completed") for i in range(done)],
+        incomplete=[Task(title=f"missed {i}", category="carried") for i in range(missed)],
+        top_priority_tomorrow="Ship the landing page",
+        note="steady day",
+    )
+
+
+def test_reviews_round_trip_through_the_state_file(tmp_path):
+    path = tmp_path / "state.json"
+    state = AppState(profit=ProfitTracker(), reviews=[_review(day=1), _review(day=2)])
+
+    save_state(state, path)
+    loaded = load_state(path)
+
+    assert len(loaded.reviews) == 2
+    assert loaded.reviews[0].review_date == date(2026, 9, 1)
+    assert [t.title for t in loaded.reviews[0].incomplete] == ["missed 0"]
+    assert loaded.reviews[0].top_priority_tomorrow == "Ship the landing page"
+    assert loaded.reviews[0].note == "steady day"
+
+
+def test_version_1_file_upgrades_cleanly_with_no_reviews(tmp_path):
+    """A state file written before reviews existed must still load."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "profit_entries": [
+                    {"amount": 50.0, "note": "old sale", "timestamp": "2026-09-01T12:00:00"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_state(path)
+
+    assert loaded.profit.total == pytest.approx(50.0)
+    assert loaded.reviews == []
+
+
+def test_saving_upgrades_a_version_1_file_to_version_2(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"schema_version": 1, "profit_entries": []}), encoding="utf-8")
+
+    save_state(load_state(path), path)
+
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 2
+
+
+def test_malformed_review_raises_storage_error(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({"schema_version": 2, "reviews": [{"review_date": "not-a-date"}]}),
         encoding="utf-8",
     )
 
