@@ -5,13 +5,13 @@ import pytest
 
 from life_os.profit import ProfitTracker
 from life_os.review import DailyReview
-from life_os.tasks import Task
 from life_os.storage import (
     AppState,
     StorageError,
     load_state,
     save_state,
 )
+from life_os.tasks import Task
 
 
 def _state_with(*amounts: float) -> AppState:

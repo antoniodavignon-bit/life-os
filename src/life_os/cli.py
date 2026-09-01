@@ -85,9 +85,7 @@ def _build_parser() -> argparse.ArgumentParser:
     log_cmd.add_argument(
         "--missed", action="append", default=[], metavar="TASK", help="a task you did not finish"
     )
-    log_cmd.add_argument(
-        "--priority", required=True, help="tomorrow's single most important task"
-    )
+    log_cmd.add_argument("--priority", required=True, help="tomorrow's single most important task")
     log_cmd.add_argument("--note", default="", help="anything worth remembering")
     log_cmd.add_argument(
         "--date",
@@ -134,7 +132,7 @@ def _run_profit(args) -> int:
     # report
     if not state.profit.entries:
         print("No profit logged yet.")
-        print(f"Add one with: life-os profit add 250 --note \"Product sale\"")
+        print('Add one with: life-os profit add 250 --note "Product sale"')
         return 0
 
     print("Profit log")

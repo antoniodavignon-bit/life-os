@@ -1,5 +1,7 @@
 # Life OS
 
+[![tests](https://github.com/antoniodavignon-bit/life-os/actions/workflows/tests.yml/badge.svg)](https://github.com/antoniodavignon-bit/life-os/actions/workflows/tests.yml)
+
 A personal operating system for goals, execution, income, and review.
 
 Life OS turns ambition into a repeatable structure. Instead of relying on
@@ -125,13 +127,19 @@ Design rules, enforced across every module and documented in
 - [ADR-002 — Domain module conventions](docs/architecture/ADR-002-domain-module-conventions.md)
 - [ADR-003 — JSON file persistence](docs/architecture/ADR-003-json-file-persistence.md)
 
+The [engineering log](docs/engineering-log.md) records how each mission was
+built and why the trade-offs were made.
+
 ## Testing
 
 ```bash
-pytest -v
+pytest -v          # 44 tests
+ruff check src tests
+ruff format --check src tests
 ```
 
-CI runs the full suite on every push and on pull requests into `main`
+CI runs lint, format check, and the full test suite across Python 3.11,
+3.12, and 3.13 on every push and on pull requests into `main`
 (`.github/workflows/tests.yml`).
 
 ## Roadmap
@@ -144,6 +152,8 @@ scoped, shippable unit of work.
 - **Mission 002 — Usable System** ✅ persistence + CLI entry point
 - **Mission 003 — Closed Loop** ✅ daily reviews in the CLI, carry-forward
   tasks, weekly completion rates, versioned state migration
+- **Mission 004 — Portfolio Ready** ✅ ruff lint + format in CI, Python
+  3.11-3.13 test matrix, MIT license, engineering log
 - **Future — AI assistant layer** — generate tasks from goal context,
   surface execution patterns, answer "what should I do next?"
 
@@ -157,4 +167,4 @@ back with fields dropped.
 
 ## License
 
-Not yet licensed. All rights reserved.
+[MIT](LICENSE)
