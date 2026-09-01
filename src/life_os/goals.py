@@ -7,7 +7,7 @@ so daily tasks (see ``tasks.py``) always trace back to something
 measurable, instead of a vague standing intention.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 DEFAULT_DURATION_DAYS = 90
