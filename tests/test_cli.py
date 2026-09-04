@@ -226,3 +226,43 @@ def test_review_week_ignores_reviews_older_than_the_window(tmp_path, capsys):
     assert code == 0
     assert "No reviews logged" in out
     assert "ancient task" not in out
+
+
+def test_tasks_refuses_more_goals_than_the_daily_maximum(capsys):
+    code, _, err = _run(
+        capsys,
+        ["tasks", "--goal", "a", "--goal", "b", "--goal", "c", "--goal", "d"],
+    )
+
+    assert code == 1
+    assert "exceeds the daily maximum" in err
+
+
+def test_profit_totals_stay_exact_across_the_cli(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    for _ in range(3):
+        _run(capsys, ["--state-file", str(state), "profit", "add", "0.10"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "profit", "report"])
+
+    assert code == 0
+    assert "Total: $0.30" in out
+
+
+def test_profit_add_rejects_a_non_numeric_amount(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    with pytest.raises(SystemExit) as exc:
+        _run(capsys, ["--state-file", str(state), "profit", "add", "lots"])
+
+    assert exc.value.code == 2
+
+
+def test_profit_add_rejects_nan(tmp_path, capsys):
+    """Decimal('NaN') parses cleanly and poisons every total it enters."""
+    state = tmp_path / "state.json"
+
+    with pytest.raises(SystemExit) as exc:
+        _run(capsys, ["--state-file", str(state), "profit", "add", "NaN"])
+
+    assert exc.value.code == 2

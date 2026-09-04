@@ -14,6 +14,7 @@ Usage:
 import argparse
 import sys
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from life_os.goals import Goal, current_milestone, generate_milestones
@@ -24,9 +25,29 @@ from life_os.storage import (
     load_state,
     save_state,
 )
-from life_os.tasks import Task, generate_tasks
+from life_os.tasks import Category, Task, generate_tasks
 
 REVIEW_WINDOW_DAYS = 7
+
+
+def _amount_arg(value: str) -> Decimal:
+    """Parse a CLI money argument into a ``Decimal``.
+
+    ``type=Decimal`` alone is not enough: ``Decimal("abc")`` raises
+    ``InvalidOperation``, which is an ``ArithmeticError`` and not one
+    of the exceptions argparse converts into a usage error, so the
+    user would get a raw traceback. ``Decimal("NaN")`` is worse — it
+    parses cleanly and poisons every total it touches.
+    """
+    try:
+        parsed = Decimal(value.strip())
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a valid amount") from exc
+
+    if not parsed.is_finite():
+        raise argparse.ArgumentTypeError(f"{value!r} is not a finite amount")
+
+    return parsed
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -55,7 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     profit_sub = profit_cmd.add_subparsers(dest="profit_command", required=True)
 
     add_cmd = profit_sub.add_parser("add", help="log an income entry")
-    add_cmd.add_argument("amount", type=float, help="amount earned")
+    add_cmd.add_argument("amount", type=_amount_arg, help="amount earned")
     add_cmd.add_argument("--note", default="", help="what it was for")
 
     profit_sub.add_parser("report", help="show logged profit")
@@ -174,8 +195,8 @@ def _run_review(args) -> int:
     if args.review_command == "log":
         review = DailyReview(
             review_date=args.date or date.today(),
-            completed=[Task(title=t, category="completed") for t in args.done],
-            incomplete=[Task(title=t, category="carried") for t in args.missed],
+            completed=[Task(title=t, category=Category.UNSPECIFIED) for t in args.done],
+            incomplete=[Task(title=t, category=Category.UNSPECIFIED) for t in args.missed],
             top_priority_tomorrow=args.priority,
             note=args.note,
         )
