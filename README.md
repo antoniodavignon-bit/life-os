@@ -94,9 +94,9 @@ Data lives in `~/.life-os/state.json` by default; override with
 
 | Module | File | What it does |
 |---|---|---|
-| Task Engine | `src/life_os/tasks.py` | Generates a daily plan: revenue, skill, and maintenance tasks from active goals |
+| Task Engine | `src/life_os/tasks.py` | Generates a daily plan: revenue, skill, and maintenance tasks from up to three active goals |
 | Goal System | `src/life_os/goals.py` | Breaks a 90-day goal into weekly milestones; reports the current week |
-| Profit Tracker | `src/life_os/profit.py` | Logs income entries, running totals, date-range summaries |
+| Profit Tracker | `src/life_os/profit.py` | Logs income entries in exact `Decimal` cents; running totals and date-range summaries |
 | Review System | `src/life_os/review.py` | End-of-day review, carry-forward of unfinished tasks, weekly stats |
 | Persistence | `src/life_os/storage.py` | Atomic JSON state file — the only module that touches disk |
 | CLI | `src/life_os/cli.py` | Presentation layer; all terminal output lives here |
@@ -119,6 +119,12 @@ Design rules, enforced across every module and documented in
 - Validation at construction: invalid state raises immediately
 - Empty input degrades cleanly to zeroed results, never an exception
 - Return copies, never internal state
+- **Closed sets over free-form strings** — task categories are an enum, not
+  whatever the caller typed ([ADR-005](docs/architecture/ADR-005-task-categories.md))
+- **`Decimal` for money, never `float`**
+  ([ADR-004](docs/architecture/ADR-004-decimal-money.md))
+- **Refuse input rather than truncate it** — excess goals raise, they are
+  not silently dropped
 - Every module ships with tests covering happy path, invalid input, and boundaries
 
 ### Decision records
@@ -126,6 +132,8 @@ Design rules, enforced across every module and documented in
 - [ADR-001 — Project structure](docs/architecture/ADR-001-project-structure.md)
 - [ADR-002 — Domain module conventions](docs/architecture/ADR-002-domain-module-conventions.md)
 - [ADR-003 — JSON file persistence](docs/architecture/ADR-003-json-file-persistence.md)
+- [ADR-004 — Represent money as Decimal](docs/architecture/ADR-004-decimal-money.md)
+- [ADR-005 — Task categories are a closed set](docs/architecture/ADR-005-task-categories.md)
 
 The [engineering log](docs/engineering-log.md) records how each mission was
 built and why the trade-offs were made.
@@ -133,7 +141,7 @@ built and why the trade-offs were made.
 ## Testing
 
 ```bash
-pytest -v          # 44 tests
+pytest -v          # 77 tests
 ruff check src tests
 ruff format --check src tests
 ```
@@ -154,16 +162,24 @@ scoped, shippable unit of work.
   tasks, weekly completion rates, versioned state migration
 - **Mission 004 — Portfolio Ready** ✅ ruff lint + format in CI, Python
   3.11-3.13 test matrix, MIT license, engineering log
+- **Mission 005 — Task & Profit Hardening** ✅ closed category set, task
+  validation, no silent truncation, `Decimal` money, encapsulated tracker
+  state, validation on load, schema v3
+- **Mission 006 — Close the loop** — carry unfinished work into the next
+  day's plan, one review per date, a single `life-os today` command
 - **Future — AI assistant layer** — generate tasks from goal context,
   surface execution patterns, answer "what should I do next?"
 
 ### State file versioning
 
-The state file carries a `schema_version`. Version 1 (profit only)
-upgrades cleanly to version 2 (adds reviews) on read. A version this
-build does not recognize is rejected rather than partially read — a
-file written by a newer build must never be silently loaded and saved
-back with fields dropped.
+The state file carries a `schema_version`. Versions 1 (profit only) and
+2 (adds reviews) upgrade cleanly to version 3 on read: float amounts
+convert to exact `Decimal` cents, and pre-[ADR-005](docs/architecture/ADR-005-task-categories.md)
+review categories map to `unspecified`. A version this build does not
+recognize is rejected rather than partially read — a file written by a
+newer build must never be silently loaded and saved back with fields
+dropped. Likewise, an unknown task category or a non-positive amount in
+a hand-edited file is rejected, not accepted.
 
 ## License
 
