@@ -23,6 +23,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from life_os.commitments import Commitment, CommitmentStatus
 from life_os.profit import ProfitEntry, ProfitTracker
 from life_os.review import DailyReview
 from life_os.tasks import Category, Task
@@ -31,14 +32,16 @@ from life_os.tasks import Category, Task
 # Version 2: adds daily reviews.
 # Version 3: amounts serialize as decimal strings, not JSON floats, and
 #            task categories are drawn from the closed Category set.
+# Version 4: adds the commitment ledger — unfinished work as tracked
+#            entities rather than repeated task titles (ADR-007).
 #
 # Bumps are deliberate even when a change is additive. Reading an older
 # file under newer code is a clean upgrade. But a newer file read by
 # older code would load, silently drop what it didn't understand, and
 # destroy it on the next save. Rejecting loudly beats losing data
 # quietly — the same principle ADR-003 applies to corrupt files.
-SCHEMA_VERSION = 3
-SUPPORTED_VERSIONS = (1, 2, 3)
+SCHEMA_VERSION = 4
+SUPPORTED_VERSIONS = (1, 2, 3, 4)
 
 # Before ADR-005, the CLI stamped review tasks with the outcome
 # ("completed" / "carried") in the category field — which described
@@ -69,9 +72,11 @@ class AppState:
 
     profit: ProfitTracker
     reviews: tuple[DailyReview, ...] = ()
+    commitments: tuple[Commitment, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reviews", tuple(self.reviews))
+        object.__setattr__(self, "commitments", tuple(self.commitments))
 
 
 def _entry_to_dict(entry: ProfitEntry) -> dict:
@@ -142,12 +147,59 @@ def _review_from_dict(raw: dict) -> DailyReview:
         raise StorageError(f"Malformed review in state file: {raw!r} ({exc})") from exc
 
 
+def _commitment_to_dict(commitment: Commitment) -> dict:
+    return {
+        "id": commitment.id,
+        "title": commitment.title,
+        "opened_on": commitment.opened_on.isoformat(),
+        "status": commitment.status.value,
+        "closed_on": commitment.closed_on.isoformat() if commitment.closed_on else None,
+    }
+
+
+def _commitment_from_dict(raw: dict) -> Commitment:
+    if not isinstance(raw, dict):
+        raise StorageError(f"Commitment must be an object, got {raw!r}")
+
+    try:
+        closed_raw = raw.get("closed_on")
+        return Commitment(
+            id=raw["id"],
+            title=str(raw["title"]),
+            opened_on=date.fromisoformat(raw["opened_on"]),
+            status=str(raw.get("status", CommitmentStatus.OPEN.value)),
+            closed_on=date.fromisoformat(closed_raw) if closed_raw else None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StorageError(f"Malformed commitment in state file: {raw!r} ({exc})") from exc
+
+
+def _seed_commitments_from_reviews(reviews: tuple[DailyReview, ...]) -> tuple[Commitment, ...]:
+    """Build a starting ledger for a state file written before v4.
+
+    Seeded from the most recent review's incomplete tasks only — the
+    work that would have been carried under the old display-only
+    behavior. Walking every review in history would resurrect months of
+    long-dead items on the first run after upgrading, which is worse
+    than starting slightly light.
+    """
+    if not reviews:
+        return ()
+
+    latest = max(reviews, key=lambda r: r.review_date)
+    return tuple(
+        Commitment(id=i, title=task.title, opened_on=latest.review_date)
+        for i, task in enumerate(latest.incomplete, start=1)
+    )
+
+
 def serialize(state: AppState) -> dict:
     """Convert application state into a JSON-safe dict."""
     return {
         "schema_version": SCHEMA_VERSION,
         "profit_entries": [_entry_to_dict(e) for e in state.profit.entries],
         "reviews": [_review_to_dict(r) for r in state.reviews],
+        "commitments": [_commitment_to_dict(c) for c in state.commitments],
     }
 
 
@@ -155,9 +207,11 @@ def deserialize(raw: dict) -> AppState:
     """Rebuild application state from a parsed JSON dict.
 
     Older files upgrade cleanly: a version 1 file (profit only) gains
-    an empty review list, and version 1 and 2 amounts stored as JSON
-    floats are converted to exact ``Decimal`` cents. A version this
-    build does not know is rejected rather than partially read.
+    an empty review list, version 1 and 2 amounts stored as JSON floats
+    are converted to exact ``Decimal`` cents, and a file written before
+    version 4 has its commitment ledger seeded from the last review's
+    unfinished work. A version this build does not know is rejected
+    rather than partially read.
     """
     if not isinstance(raw, dict):
         raise StorageError("State file must contain a JSON object")
@@ -177,9 +231,20 @@ def deserialize(raw: dict) -> AppState:
     if not isinstance(reviews_raw, list):
         raise StorageError("'reviews' must be a list")
 
+    commitments_raw = raw.get("commitments")
+    if commitments_raw is not None and not isinstance(commitments_raw, list):
+        raise StorageError("'commitments' must be a list")
+
     tracker = ProfitTracker(entries=[_entry_from_dict(e) for e in entries_raw])
     reviews = tuple(_review_from_dict(r) for r in reviews_raw)
-    return AppState(profit=tracker, reviews=reviews)
+
+    if commitments_raw is None:
+        # Pre-v4 file: no ledger was ever written, so build one.
+        commitments = _seed_commitments_from_reviews(reviews)
+    else:
+        commitments = tuple(_commitment_from_dict(c) for c in commitments_raw)
+
+    return AppState(profit=tracker, reviews=reviews, commitments=commitments)
 
 
 def load_state(path: Path = DEFAULT_STATE_PATH) -> AppState:

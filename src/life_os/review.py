@@ -6,10 +6,12 @@ priority; incomplete work carries forward instead of quietly
 disappearing. Weekly summaries aggregate those reviews so execution
 patterns become visible over time rather than felt.
 
-Carry-forward selection lives here rather than in the CLI (ADR-006):
-deciding *which* review a day inherits from, and whether the inherited
-pile is too big, is domain reasoning. The CLI only decides how to say
-it.
+Unfinished work itself lives in ``commitments.py`` (ADR-007). A review
+records what happened on one day; the commitment ledger tracks the
+obligations that outlive it. Mission 006 carried work by re-reading the
+last review's incomplete tasks — correct as a minimum, and superseded
+here, because that mechanism could not express age, closure, or a
+deliberate decision to drop something.
 
 Follows the same conventions as the other modules: frozen dataclasses,
 pure functions, validation at construction, and no I/O in domain logic.
@@ -19,12 +21,6 @@ from dataclasses import dataclass
 from datetime import date
 
 from life_os.tasks import Task
-
-# Above this many carried tasks, you are not planning a fresh day —
-# you are behind. Life OS says so rather than absorbing it silently.
-# Carried work is deliberately exempt from MAX_ACTIVE_GOALS (ADR-006);
-# this threshold is the pressure valve that exemption needs.
-CARRY_WARNING_THRESHOLD = 3
 
 
 @dataclass(frozen=True)
@@ -81,14 +77,6 @@ class WeeklySummary:
     completion_rate: float
 
 
-def carry_forward(review: DailyReview) -> list[Task]:
-    """Return the tasks that should roll into the next day.
-
-    Returns a new list so mutating the result can't corrupt the review.
-    """
-    return list(review.incomplete)
-
-
 def summarize_week(reviews: list[DailyReview]) -> WeeklySummary:
     """Aggregate a week's reviews into a single performance summary.
 
@@ -107,44 +95,6 @@ def summarize_week(reviews: list[DailyReview]) -> WeeklySummary:
     )
 
 
-@dataclass(frozen=True)
-class CarryForward:
-    """Unfinished work inherited from the most recent prior review.
-
-    ``source_date`` is the review the tasks came from, or ``None`` when
-    there is nothing to carry — a first run, or a genuinely clean slate.
-    Both are normal states, not errors.
-    """
-
-    tasks: tuple[Task, ...] = ()
-    source_date: date | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "tasks", tuple(self.tasks))
-
-        if self.source_date is not None and not isinstance(self.source_date, date):
-            raise ValueError(f"source_date must be a date, got {type(self.source_date).__name__}")
-
-    @property
-    def count(self) -> int:
-        """How many tasks are being carried."""
-        return len(self.tasks)
-
-    @property
-    def is_empty(self) -> bool:
-        """Whether there is nothing to carry."""
-        return not self.tasks
-
-    @property
-    def is_overloaded(self) -> bool:
-        """Whether the carried pile has passed the warning threshold.
-
-        The domain decides *that* you are overloaded; the presentation
-        layer decides how to tell you (ADR-002, ADR-006).
-        """
-        return self.count > CARRY_WARNING_THRESHOLD
-
-
 def latest_review_before(reviews: list[DailyReview], day: date) -> DailyReview | None:
     """The most recent review dated strictly before ``day``.
 
@@ -158,20 +108,6 @@ def latest_review_before(reviews: list[DailyReview], day: date) -> DailyReview |
     if not earlier:
         return None
     return max(earlier, key=lambda r: r.review_date)
-
-
-def carried_forward(reviews: list[DailyReview], day: date) -> CarryForward:
-    """What ``day`` inherits from the last review before it.
-
-    An empty history yields an empty ``CarryForward`` rather than
-    raising — a first run carries nothing, which is a real outcome
-    (ADR-002, rule 5).
-    """
-    source = latest_review_before(reviews, day)
-    if source is None:
-        return CarryForward()
-
-    return CarryForward(tasks=tuple(source.incomplete), source_date=source.review_date)
 
 
 def upsert_review(

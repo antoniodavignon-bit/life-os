@@ -283,19 +283,95 @@ been describing since Mission 002.
 
 ---
 
+## Mission 007 — The Commitment Ledger
+
+**Problem.** Mission 006 made unfinished work reach the next day's plan
+by re-reading the last review's `incomplete` list — a list of `Task`
+values. That closed the loop but could not answer four questions: how
+long have I been carrying this, is this the thing I missed on Monday,
+did I ever do it, and am I allowed to decide it no longer matters.
+
+The last one is the real cost. A tracker offering no way to deliberately
+abandon something quietly pressures you into lying to it.
+
+**What was built.**
+
+- `commitments.py` — `Commitment` as an entity with identity, a status
+  lifecycle, age, and staleness (`ADR-007`)
+- Pure ledger functions: `record_misses`, `close_by_title`,
+  `close_by_id`, `open_items`, `stale_items`
+- `life-os open`, `life-os done <id>`, `life-os drop <id>`
+- `review log` closes matching commitments and opens new ones
+- Schema 3 → 4, seeding the ledger on upgrade
+- `CarryForward`, `carried_forward`, and `carry_forward` deleted
+- 48 new tests (101 → 149)
+
+**Decision: a type was carrying two meanings.** `Task` is a value
+object, correctly — today's generated revenue task is not yesterday's
+instance of it, and asking whether they are "the same" is meaningless.
+An unfinished obligation is not a value: it persists, it ages, it ends.
+Using one type for both is the same mistake ADR-005 caught in a *field*,
+one level up.
+
+**Decision: integer ids, not UUIDs or content hashes.** A UUID is
+unusable at a terminal. A content hash of title and date — the original
+plan for this mission — is attractive because re-missing the same title
+on the same day would be idempotent for free. But `record_misses` needs
+a title lookup regardless, to decide whether a miss continues an open
+commitment. The hash buys nothing already unpaid for, while adding a
+collision risk to document and guard. `max(existing) + 1` has no
+collisions by construction, and `life-os done 7` is a better thing to
+type.
+
+**Decision: a repeated miss ages one commitment.** Missing the same
+thing four days running is one commitment aged four days, not four
+commitments aged zero. `opened_on` keeps pointing at the day the
+obligation first appeared, which is the entire reason the age means
+anything. Missing something again *after* closing it opens a new
+commitment — doing a thing and later failing to do it again is a new
+obligation, and keeping both keeps the history honest.
+
+**Decision: delete Mission 006's carry rather than keep both.**
+`CarryForward` and `carried_forward` were written two commits earlier.
+Display-only carry was the right minimum to make the loop close and is
+the wrong maximum now. Two carry mechanisms in one codebase is worse
+than either alone: they drift, and the next reader cannot tell which is
+authoritative.
+
+**Behavior change worth naming.** The ledger answers "what do I owe",
+not "what did I inherit". Mission 006 compared review dates strictly
+before today so a review logged this morning could not appear in this
+afternoon's plan — necessary then, because inheriting your own day was a
+display artifact of deriving carry from "the last review". The ledger
+has no such artifact, so a commitment opened this morning is shown this
+afternoon, aged zero days. `latest_review_before` keeps its strict
+comparison because it answers a different question: `--priority` states
+*tomorrow's* priority, so the relevant statement is from the last day
+you closed out.
+
+**Migration.** A pre-v4 file has its ledger seeded from the most recent
+review's incomplete tasks only, dated to that review. Walking all of
+history would resurrect months of dead items on first run, which is
+worse than starting slightly light. An empty ledger written at v4 is not
+reseeded, so dropping your last open item stays dropped. Verified
+end-to-end against a real v3 file.
+
+**Result.** 149 tests. Nine days of missing the same thing is one
+commitment, nine days old, flagged stale, closable or droppable by id.
+
+---
+
 ## Open threads
 
-- **Carried work is displayed, not tracked.** `today` shows it; nothing
-  records whether you did it, so a task can be carried indefinitely
-  without ever being closed. Fixing that means carried tasks become
-  first-class entries with identity — a data-model change, not a
-  display change.
-- **No aging-out.** A task carried for two weeks looks exactly like one
-  carried since yesterday. A staleness prompt was considered in Mission
-  006 and deferred.
-- **The carry chain is one link long.** Carry-forward reads the single
-  most recent prior review. A task missed on Monday and not re-logged
-  on Tuesday stops being carried.
+- **Correcting a review does not retract its commitments.**
+  `upsert_review` replaces the review, but commitments opened by the
+  version it replaced stay open. Fixing this needs a link from
+  commitment to source review — a further data-model change.
+- **Title matching is textual.** Rewording a commitment opens a second
+  one. `life-os done <id>` is the escape hatch, which is why it exists
+  alongside title matching.
+- **Nothing prunes closed commitments.** The ledger only grows. Fine at
+  personal scale; revisit if `open` ever gets slow to read.
 - **Task generation vs. the PRD.** The PRD specifies 9 tasks per day
   (3 revenue / 3 skill / 3 maintenance). `generate_tasks` produces one
   task per category per goal, so a single active goal yields 3 tasks,
@@ -304,6 +380,7 @@ been describing since Mission 002.
 - **No presentation layer beyond the CLI.** The domain modules would
   support a web UI or API unchanged; nothing has been built.
 - **The AI layer is unstarted.** The intended shape is generating tasks
-  from goal context and surfacing execution patterns across reviews —
-  reading the same domain modules, not replacing their logic. `today`
-  is the command it would most naturally extend.
+  from goal context and surfacing execution patterns across reviews and
+  the commitment ledger — reading the same domain modules, not replacing
+  their logic. The ledger is the richest signal it would have: what gets
+  finished, what gets dropped, and how long things sit.
