@@ -138,7 +138,7 @@ def test_version_1_file_upgrades_cleanly_with_no_reviews(tmp_path):
     loaded = load_state(path)
 
     assert loaded.profit.total == Decimal("50.00")
-    assert loaded.reviews == []
+    assert loaded.reviews == ()
 
 
 def test_saving_upgrades_an_old_file_to_the_current_schema(tmp_path):
@@ -261,3 +261,31 @@ def test_unknown_task_category_in_a_state_file_is_rejected(tmp_path):
 
     with pytest.raises(StorageError, match="Malformed"):
         load_state(path)
+
+
+def test_app_state_reviews_are_immutable():
+    """frozen=True over a mutable list is a promise it can't keep."""
+    state = AppState(profit=ProfitTracker(), reviews=[_review(day=1)])
+
+    assert isinstance(state.reviews, tuple)
+    with pytest.raises(AttributeError):
+        state.reviews.append(_review(day=2))
+
+
+def test_review_task_collections_are_immutable():
+    review = _review(day=1)
+
+    with pytest.raises(AttributeError):
+        review.completed.append(Task("sneak this in", Category.REVENUE))
+    with pytest.raises(AttributeError):
+        review.incomplete.append(Task("this too", Category.REVENUE))
+
+
+def test_unwritable_path_raises_storage_error_not_a_raw_oserror(tmp_path):
+    """A file where a directory should be: the write cannot succeed,
+    and the user should see an error, not a traceback."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("i am a file", encoding="utf-8")
+
+    with pytest.raises(StorageError, match="Could not write state file"):
+        save_state(_state_with("10.00"), blocker / "state.json")

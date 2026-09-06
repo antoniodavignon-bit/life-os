@@ -206,32 +206,104 @@ file through the installed console script.
 
 ---
 
+## Mission 006 — Close the Loop
+
+**Problem.** `carry_forward()` had existed since Mission 001 and the CLI
+printed its result from Mission 003, but `_run_tasks` never loaded
+state. Yesterday's unfinished work was displayed once, at review time,
+and then dropped. The README said Life OS "carries unfinished work
+forward." It displayed it.
+
+For a repository whose argument is that its documentation and its code
+agree, that was the most expensive kind of gap.
+
+**What was built.**
+
+- `latest_review_before`, `carried_forward`, and a `CarryForward` value
+  type in `review.py` (`ADR-006`)
+- `upsert_review` — one review per date
+- `life-os today` — carried work, the plan, and yesterday's priority
+- `review log` corrects instead of duplicating, and says what it
+  replaced
+- `DailyReview` and `AppState` hold tuples
+- `save_state` wraps filesystem failures as `StorageError`
+- 24 new tests (77 → 101)
+
+**Decision: `tasks` stays pure; `today` owns state.** The obvious fix
+was to make `life-os tasks` load state. It was rejected. `tasks` has a
+clean contract — generate a plan from these goals — and it is the
+function a future API or AI planning layer will call. Adding
+persistence changes what it means and makes the pure generator harder
+to reuse.
+
+That drew a line the codebase did not previously have: domain modules
+are pure, `storage.py` is the only filesystem boundary, and within the
+CLI only commands that are *about* history load state. `tasks` prints a
+pointer to `today` so nobody concludes their carried work vanished.
+
+**Decision: carried work is exempt from the goal limit, but warns.** A
+carried task is work already committed to, not a new front being
+opened. Counting it against `MAX_ACTIVE_GOALS` would mean a bad day
+mechanically shrinks the next day's capacity — the system would punish
+you for a rough Tuesday, which inverts what it is for.
+
+The counter-argument is real: without a ceiling, a bad week compounds
+into an eleven-item day and ADR-005's limit means nothing. So the
+exemption ships with a pressure valve. Above three carried tasks,
+`today` says plainly that you are behind rather than planning fresh,
+and that the signal is to cut scope rather than add a goal. The
+overload is surfaced, not absorbed — a number the user can see beats a
+limit that silently rearranges their day.
+
+**Decision: strictly before, not on-or-before.** `latest_review_before`
+uses a strict date comparison. Log a review this morning, plan again
+this afternoon, and a non-strict comparison would make the day inherit
+its own misses and show work already accounted for. One character of
+difference; a confusing bug either way.
+
+**Decision: announce the correction, don't gate it.** `upsert_review`
+replaces the review for a date and returns what it displaced, so the
+CLI can report it. No `--force` flag — you are deliberately re-running
+the command to fix a typo, and friction there is only friction.
+Announcing loudly is the right guard; blocking is not.
+
+**Smaller things closed in passing.** `DailyReview` and `AppState` both
+held mutable lists behind `frozen=True`, which is a promise neither
+could keep; both now hold tuples and coerce at the boundary.
+`save_state` raised bare `OSError` on an unwritable path, so a
+read-only directory produced a traceback rather than an error message —
+it now wraps as `StorageError`, matching how `load_state` already
+handled corrupt files, with a backstop in `main()`.
+
+**No schema change.** Carry-forward and upsert read existing version 3
+data. Nothing about the file format needed to move.
+
+**Result.** 101 tests. `life-os today` runs the loop the README has
+been describing since Mission 002.
+
+---
+
 ## Open threads
 
-- **Carry-forward does not carry forward.** `carry_forward()` returns
-  the incomplete tasks and the CLI prints them at review time, but
-  `life-os tasks` never loads state — it plans from `--goal` arguments
-  alone. Unfinished work is displayed and then dropped. The README
-  claims the loop closes; in software it does not. This is the largest
-  gap between the documentation and the code and is the next mission.
-- **Reviews have no uniqueness on date.** `review log` twice in one day
-  appends two reviews, and `review week` double-counts them. Needs an
-  upsert keyed on `review_date`.
+- **Carried work is displayed, not tracked.** `today` shows it; nothing
+  records whether you did it, so a task can be carried indefinitely
+  without ever being closed. Fixing that means carried tasks become
+  first-class entries with identity — a data-model change, not a
+  display change.
+- **No aging-out.** A task carried for two weeks looks exactly like one
+  carried since yesterday. A staleness prompt was considered in Mission
+  006 and deferred.
+- **The carry chain is one link long.** Carry-forward reads the single
+  most recent prior review. A task missed on Monday and not re-logged
+  on Tuesday stops being carried.
 - **Task generation vs. the PRD.** The PRD specifies 9 tasks per day
   (3 revenue / 3 skill / 3 maintenance). `generate_tasks` produces one
   task per category per goal, so a single active goal yields 3 tasks,
   not 9. Closing the gap is a product decision — templates per
   category, or requiring three active goals — not a bug fix.
-- **`frozen=True` over mutable lists.** `DailyReview` and `AppState`
-  still hold lists behind frozen dataclasses, so the immutability is
-  nominal. `DailyPlan` was converted to tuples in Mission 005; the same
-  treatment is queued behind the carry-forward work.
-- **`cli.main()` does not catch `OSError`.** An unwritable or
-  permission-denied state file prints a raw traceback instead of a
-  clean error. `load_state` now wraps read errors as `StorageError`;
-  the write path does not.
 - **No presentation layer beyond the CLI.** The domain modules would
   support a web UI or API unchanged; nothing has been built.
 - **The AI layer is unstarted.** The intended shape is generating tasks
   from goal context and surfacing execution patterns across reviews —
-  reading the same domain modules, not replacing their logic.
+  reading the same domain modules, not replacing their logic. `today`
+  is the command it would most naturally extend.

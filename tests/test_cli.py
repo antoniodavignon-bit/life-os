@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from life_os.cli import main
+from life_os.review import CARRY_WARNING_THRESHOLD
 
 
 def _run(capsys, argv):
@@ -174,6 +175,8 @@ def test_review_week_aggregates_across_invocations(tmp_path, capsys):
             "c",
             "--priority",
             "first priority",
+            "--date",
+            str(date.today() - timedelta(days=1)),
         ],
     )
     _run(
@@ -266,3 +269,191 @@ def test_profit_add_rejects_nan(tmp_path, capsys):
         _run(capsys, ["--state-file", str(state), "profit", "add", "NaN"])
 
     assert exc.value.code == 2
+
+
+def test_review_log_twice_in_a_day_corrects_instead_of_double_counting(tmp_path, capsys):
+    """A day has one review. Appending a second reported a completion
+    rate that was arithmetically fine and factually wrong."""
+    state = tmp_path / "state.json"
+    base = ["--state-file", str(state), "review", "log"]
+
+    _run(capsys, [*base, "--done", "a", "--missed", "b", "--priority", "first"])
+    code, out, _ = _run(capsys, [*base, "--done", "a", "--done", "b", "--priority", "corrected"])
+
+    assert code == 0
+    assert "Replaced the previous review for this date" in out
+    assert "1/2" in out
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "review", "week"])
+
+    assert "1 reviews" in out
+    assert "2 completed" in out
+    assert "0 missed" in out
+    assert "corrected" in out
+
+
+def test_today_carries_yesterdays_misses_into_the_plan(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "posted content",
+            "--missed",
+            "wrote the email sequence",
+            "--priority",
+            "ship the landing page",
+            "--date",
+            str(date.today() - timedelta(days=1)),
+        ],
+    )
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    assert "CARRIED (1)" in out
+    assert "wrote the email sequence" in out
+    assert "Execute a direct revenue action for: grow the store" in out
+    assert "ship the landing page" in out
+    assert "4 things on the table today" in out
+
+
+def test_today_does_not_inherit_a_review_logged_earlier_the_same_day(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--missed",
+            "todays own miss",
+            "--priority",
+            "keep going",
+        ],
+    )
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    assert "CARRIED" not in out
+    assert "todays own miss" not in out
+
+
+def test_today_warns_when_the_carried_pile_is_too_big(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    missed = []
+    for i in range(CARRY_WARNING_THRESHOLD + 1):
+        missed += ["--missed", f"missed {i}"]
+
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            *missed,
+            "--priority",
+            "dig out",
+            "--date",
+            str(date.today() - timedelta(days=1)),
+        ],
+    )
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    assert "you are behind, not planning fresh" in out
+
+
+def test_today_does_not_warn_at_the_threshold(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    missed = []
+    for i in range(CARRY_WARNING_THRESHOLD):
+        missed += ["--missed", f"missed {i}"]
+
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            *missed,
+            "--priority",
+            "steady",
+            "--date",
+            str(date.today() - timedelta(days=1)),
+        ],
+    )
+
+    _, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert "you are behind" not in out
+    assert f"CARRIED ({CARRY_WARNING_THRESHOLD})" in out
+
+
+def test_today_is_friendly_on_a_first_run(tmp_path, capsys):
+    state = tmp_path / "state.json"
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today"])
+
+    assert code == 0
+    assert "CARRIED" not in out
+    assert "no active goals" in out
+
+
+def test_carried_work_does_not_count_against_the_goal_limit(tmp_path, capsys):
+    """Finishing badly must not shrink tomorrow's capacity (ADR-006)."""
+    state = tmp_path / "state.json"
+    missed = []
+    for i in range(5):
+        missed += ["--missed", f"missed {i}"]
+
+    _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            *missed,
+            "--priority",
+            "dig out",
+            "--date",
+            str(date.today() - timedelta(days=1)),
+        ],
+    )
+
+    code, out, _ = _run(
+        capsys,
+        ["--state-file", str(state), "today", "--goal", "a", "--goal", "b", "--goal", "c"],
+    )
+
+    assert code == 0
+    assert "exceeds the daily maximum" not in out
+
+
+def test_tasks_points_at_today_for_carried_work(capsys):
+    code, out, _ = _run(capsys, ["tasks", "--goal", "grow the store"])
+
+    assert code == 0
+    assert "life-os today" in out
+
+
+def test_unwritable_state_file_reports_an_error_not_a_traceback(tmp_path, capsys):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("i am a file", encoding="utf-8")
+
+    code, _, err = _run(
+        capsys, ["--state-file", str(blocker / "state.json"), "profit", "add", "50"]
+    )
+
+    assert code == 1
+    assert "Could not write state file" in err

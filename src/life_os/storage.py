@@ -18,7 +18,7 @@ holds if hand-edited nonsense is rejected on the way back in.
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -59,10 +59,19 @@ class StorageError(Exception):
 
 @dataclass(frozen=True)
 class AppState:
-    """Everything Life OS persists between runs."""
+    """Everything Life OS persists between runs.
+
+    ``reviews`` is a tuple: the state object is frozen, and a frozen
+    object holding a mutable list is a promise it can't keep. Callers
+    build a new ``AppState`` to change the reviews rather than mutating
+    the one they were handed.
+    """
 
     profit: ProfitTracker
-    reviews: list[DailyReview] = field(default_factory=list)
+    reviews: tuple[DailyReview, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reviews", tuple(self.reviews))
 
 
 def _entry_to_dict(entry: ProfitEntry) -> dict:
@@ -169,7 +178,7 @@ def deserialize(raw: dict) -> AppState:
         raise StorageError("'reviews' must be a list")
 
     tracker = ProfitTracker(entries=[_entry_from_dict(e) for e in entries_raw])
-    reviews = [_review_from_dict(r) for r in reviews_raw]
+    reviews = tuple(_review_from_dict(r) for r in reviews_raw)
     return AppState(profit=tracker, reviews=reviews)
 
 
@@ -205,7 +214,20 @@ def _json_default(value: object) -> str:
 
 
 def save_state(state: AppState, path: Path = DEFAULT_STATE_PATH) -> None:
-    """Write state to ``path`` atomically, creating parent dirs as needed."""
+    """Write state to ``path`` atomically, creating parent dirs as needed.
+
+    Filesystem failures — a read-only directory, a full disk, a path
+    the user cannot write — surface as ``StorageError`` so the CLI
+    reports them the same way it reports a corrupt file, rather than
+    letting a raw ``OSError`` traceback reach the terminal.
+    """
+    try:
+        _write_atomically(state, path)
+    except OSError as exc:
+        raise StorageError(f"Could not write state file to {path}: {exc}") from exc
+
+
+def _write_atomically(state: AppState, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")

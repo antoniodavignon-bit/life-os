@@ -2,7 +2,15 @@ from datetime import date
 
 import pytest
 
-from life_os.review import DailyReview, carry_forward, summarize_week
+from life_os.review import (
+    CARRY_WARNING_THRESHOLD,
+    DailyReview,
+    carried_forward,
+    carry_forward,
+    latest_review_before,
+    summarize_week,
+    upsert_review,
+)
 from life_os.tasks import Task
 
 
@@ -84,3 +92,105 @@ def test_summarize_week_handles_an_empty_week():
     assert summary.tasks_completed == 0
     assert summary.tasks_missed == 0
     assert summary.completion_rate == 0.0
+
+
+def _dated(day: int, missed: int = 1, priority: str = "Ship the landing page") -> DailyReview:
+    return DailyReview(
+        review_date=date(2026, 9, day),
+        completed=[_task("done")],
+        incomplete=[_task(f"missed {i} on day {day}") for i in range(missed)],
+        top_priority_tomorrow=priority,
+    )
+
+
+def test_latest_review_before_picks_the_most_recent_earlier_review():
+    reviews = [_dated(1), _dated(3), _dated(2)]
+
+    assert latest_review_before(reviews, date(2026, 9, 5)).review_date == date(2026, 9, 3)
+
+
+def test_latest_review_before_is_strict_so_a_day_never_inherits_itself():
+    """Log this morning, plan again this afternoon: today's own misses
+    must not come back as carried work."""
+    reviews = [_dated(1), _dated(4)]
+
+    assert latest_review_before(reviews, date(2026, 9, 4)).review_date == date(2026, 9, 1)
+
+
+def test_latest_review_before_returns_none_with_no_earlier_review():
+    assert latest_review_before([_dated(5)], date(2026, 9, 2)) is None
+    assert latest_review_before([], date(2026, 9, 2)) is None
+
+
+def test_carried_forward_takes_the_incomplete_tasks_and_their_date():
+    carry = carried_forward([_dated(1), _dated(3, missed=2)], date(2026, 9, 4))
+
+    assert carry.count == 2
+    assert carry.source_date == date(2026, 9, 3)
+    assert [t.title for t in carry.tasks] == ["missed 0 on day 3", "missed 1 on day 3"]
+
+
+def test_carried_forward_is_empty_on_a_first_run():
+    carry = carried_forward([], date(2026, 9, 4))
+
+    assert carry.is_empty
+    assert carry.count == 0
+    assert carry.source_date is None
+    assert not carry.is_overloaded
+
+
+def test_carry_is_overloaded_only_past_the_threshold():
+    at_limit = carried_forward([_dated(1, missed=CARRY_WARNING_THRESHOLD)], date(2026, 9, 2))
+    over = carried_forward([_dated(1, missed=CARRY_WARNING_THRESHOLD + 1)], date(2026, 9, 2))
+
+    assert not at_limit.is_overloaded
+    assert over.is_overloaded
+
+
+def test_carry_forward_tasks_are_immutable():
+    carry = carried_forward([_dated(1)], date(2026, 9, 2))
+
+    with pytest.raises(AttributeError):
+        carry.tasks.append(_task("injected"))
+
+
+def test_upsert_adds_a_review_for_a_new_date():
+    reviews, replaced = upsert_review([_dated(1)], _dated(2))
+
+    assert [r.review_date.day for r in reviews] == [1, 2]
+    assert replaced is None
+
+
+def test_upsert_replaces_the_review_for_an_existing_date():
+    """Logging twice in a day used to double-count that day in the
+    weekly summary."""
+    original = _dated(2, priority="Old priority")
+    correction = _dated(2, missed=3, priority="Corrected priority")
+
+    reviews, replaced = upsert_review([_dated(1), original], correction)
+
+    assert len(reviews) == 2
+    assert reviews[1].top_priority_tomorrow == "Corrected priority"
+    assert replaced is original
+
+
+def test_upsert_returns_reviews_sorted_by_date():
+    reviews, _ = upsert_review([_dated(5), _dated(1)], _dated(3))
+
+    assert [r.review_date.day for r in reviews] == [1, 3, 5]
+
+
+def test_upsert_does_not_mutate_the_list_it_was_given():
+    original = [_dated(1)]
+
+    upsert_review(original, _dated(2))
+
+    assert len(original) == 1
+
+
+def test_a_week_of_upserted_reviews_counts_each_day_once():
+    reviews: list[DailyReview] = []
+    for _ in range(3):
+        reviews, _ = upsert_review(reviews, _dated(1, missed=2))
+
+    assert summarize_week(reviews).reviews_logged == 1
