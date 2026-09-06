@@ -4,11 +4,17 @@ This is the presentation layer ADR-002 keeps out of the domain modules:
 all formatting, argument parsing, and terminal output lives here, so
 `tasks`, `goals`, `profit`, and `review` stay pure and testable.
 
+Only the commands that need persisted state load it (ADR-006).
+``tasks`` stays a pure generator so it remains scriptable and reusable;
+``today`` is the stateful command that closes the loop.
+
 Usage:
+    life-os today --goal "grow the store"
     life-os tasks --goal "grow the store" --goal "get in shape"
     life-os profit add 250 --note "Product sale"
     life-os profit report
     life-os goals plan --title "Launch Life OS" --start 2026-09-01
+    life-os review log --done "..." --missed "..." --priority "..."
 """
 
 import argparse
@@ -18,9 +24,19 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from life_os.goals import Goal, current_milestone, generate_milestones
-from life_os.review import DailyReview, carry_forward, summarize_week
+from life_os.review import (
+    CARRY_WARNING_THRESHOLD,
+    CarryForward,
+    DailyReview,
+    carried_forward,
+    carry_forward,
+    latest_review_before,
+    summarize_week,
+    upsert_review,
+)
 from life_os.storage import (
     DEFAULT_STATE_PATH,
+    AppState,
     StorageError,
     load_state,
     save_state,
@@ -62,6 +78,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"where Life OS stores its data (default: {DEFAULT_STATE_PATH})",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
+
+    today_cmd = subcommands.add_parser(
+        "today", help="carried work, today's plan, and your stated priority"
+    )
+    today_cmd.add_argument(
+        "--goal",
+        action="append",
+        default=[],
+        metavar="GOAL",
+        help="an active goal (repeat for multiple goals)",
+    )
 
     tasks_cmd = subcommands.add_parser("tasks", help="generate today's task plan")
     tasks_cmd.add_argument(
@@ -121,11 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_tasks(args) -> int:
-    plan = generate_tasks(args.goal)
-
-    print("Today's plan")
-    print("=" * 40)
+def _print_plan(plan) -> None:
     for label, tasks in (
         ("REVENUE", plan.revenue),
         ("SKILL", plan.skill),
@@ -136,6 +159,64 @@ def _run_tasks(args) -> int:
             print("  (none)")
         for task in tasks:
             print(f"  - {task.title}")
+
+
+def _print_carry(carry: CarryForward) -> None:
+    """Render inherited work, loudly when there is too much of it."""
+    if carry.is_empty:
+        return
+
+    if carry.is_overloaded:
+        print(
+            f"!  Carrying {carry.count} tasks from {carry.source_date} - "
+            "you are behind, not planning fresh."
+        )
+        print(
+            f"!  More than {CARRY_WARNING_THRESHOLD} carried is the signal to cut scope, "
+            "not to add a goal."
+        )
+        print()
+
+    print(f"CARRIED ({carry.count}) from {carry.source_date}")
+    for task in carry.tasks:
+        print(f"  - {task.title}")
+
+
+def _run_tasks(args) -> int:
+    plan = generate_tasks(args.goal)
+
+    print("Today's plan")
+    print("=" * 40)
+    _print_plan(plan)
+    print("\nCarried work is not shown here - run: life-os today")
+    return 0
+
+
+def _run_today(args) -> int:
+    """The stateful view of the loop: what you owe, what you planned,
+    and what you said mattered most."""
+    state = load_state(args.state_file)
+    today = date.today()
+
+    carry = carried_forward(state.reviews, today)
+    plan = generate_tasks(args.goal)
+
+    print(f"{today:%A, %B %d}")
+    print("=" * 46)
+
+    _print_carry(carry)
+
+    print("\nTODAY'S PLAN")
+    if not args.goal:
+        print("  (no active goals - add them with --goal)")
+    _print_plan(plan)
+
+    last = latest_review_before(state.reviews, today)
+    if last is not None:
+        print(f"\nYou said the priority was: {last.top_priority_tomorrow}")
+
+    total = carry.count + plan.total_tasks
+    print(f"\n{total} things on the table today.")
     return 0
 
 
@@ -200,11 +281,17 @@ def _run_review(args) -> int:
             top_priority_tomorrow=args.priority,
             note=args.note,
         )
-        state.reviews.append(review)
-        save_state(state, args.state_file)
+        reviews, replaced = upsert_review(state.reviews, review)
+        save_state(AppState(profit=state.profit, reviews=reviews), args.state_file)
 
         rate = review.completion_rate * 100
         print(f"Review logged for {review.review_date}")
+        if replaced is not None:
+            was = replaced.completion_rate * 100
+            print(
+                f"  Replaced the previous review for this date "
+                f"(was {len(replaced.completed)}/{replaced.total_tasks}, {was:.0f}%)."
+            )
         print(f"  Completed: {len(review.completed)}/{review.total_tasks}  ({rate:.0f}%)")
 
         carried = carry_forward(review)
@@ -262,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     handlers = {
+        "today": _run_today,
         "tasks": _run_tasks,
         "profit": _run_profit,
         "goals": _run_goals,
@@ -271,6 +359,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return handlers[args.command](args)
     except (ValueError, StorageError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # Backstop. storage.py wraps its own filesystem failures, but a
+        # raw OSError from anywhere else should still be a clean error
+        # rather than a traceback in someone's terminal.
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

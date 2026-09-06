@@ -7,7 +7,7 @@ A personal operating system for goals, execution, income, and review.
 Life OS turns ambition into a repeatable structure. Instead of relying on
 motivation, it generates a daily task plan from your active goals, breaks
 90-day goals into weekly milestones, tracks income, and closes the loop
-with an end-of-day review that carries unfinished work forward.
+with an end-of-day review whose unfinished work lands in tomorrow's plan.
 
 **Plan → Execute → Track → Review → Repeat.**
 
@@ -20,7 +20,39 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Generate today's plan from your active goals:
+Run your day — what you carried in, what you planned, what you said mattered:
+
+```bash
+$ life-os today --goal "grow the store" --goal "get in shape"
+Sunday, September 06
+==============================================
+!  Carrying 4 tasks from 2026-09-05 - you are behind, not planning fresh.
+!  More than 3 carried is the signal to cut scope, not to add a goal.
+
+CARRIED (4) from 2026-09-05
+  - wrote the email sequence
+  - called the supplier
+  - fixed checkout
+  - shot the reel
+
+TODAY'S PLAN
+
+REVENUE
+  - Execute a direct revenue action for: grow the store
+  - Execute a direct revenue action for: get in shape
+  ...
+
+You said the priority was: ship the landing page
+
+10 things on the table today.
+```
+
+Carried work is deliberately exempt from the three-goal limit — finishing
+badly should not shrink tomorrow's capacity — but past three carried
+tasks Life OS says so out loud
+([ADR-006](docs/architecture/ADR-006-carry-forward-semantics.md)).
+
+Generate a plan from goals alone, with no state involved:
 
 ```bash
 $ life-os tasks --goal "grow the store" --goal "get in shape"
@@ -95,9 +127,10 @@ Data lives in `~/.life-os/state.json` by default; override with
 | Module | File | What it does |
 |---|---|---|
 | Task Engine | `src/life_os/tasks.py` | Generates a daily plan: revenue, skill, and maintenance tasks from up to three active goals |
+| Carry-forward | `src/life_os/review.py` | Selects what today inherits from the last review, and flags an overloaded pile |
 | Goal System | `src/life_os/goals.py` | Breaks a 90-day goal into weekly milestones; reports the current week |
 | Profit Tracker | `src/life_os/profit.py` | Logs income entries in exact `Decimal` cents; running totals and date-range summaries |
-| Review System | `src/life_os/review.py` | End-of-day review, carry-forward of unfinished tasks, weekly stats |
+| Review System | `src/life_os/review.py` | End-of-day review (one per date), weekly stats |
 | Persistence | `src/life_os/storage.py` | Atomic JSON state file — the only module that touches disk |
 | CLI | `src/life_os/cli.py` | Presentation layer; all terminal output lives here |
 
@@ -125,6 +158,9 @@ Design rules, enforced across every module and documented in
   ([ADR-004](docs/architecture/ADR-004-decimal-money.md))
 - **Refuse input rather than truncate it** — excess goals raise, they are
   not silently dropped
+- **Only commands that are about history load state** — domain modules are
+  pure, `storage.py` is the single filesystem boundary
+  ([ADR-006](docs/architecture/ADR-006-carry-forward-semantics.md))
 - Every module ships with tests covering happy path, invalid input, and boundaries
 
 ### Decision records
@@ -134,6 +170,7 @@ Design rules, enforced across every module and documented in
 - [ADR-003 — JSON file persistence](docs/architecture/ADR-003-json-file-persistence.md)
 - [ADR-004 — Represent money as Decimal](docs/architecture/ADR-004-decimal-money.md)
 - [ADR-005 — Task categories are a closed set](docs/architecture/ADR-005-task-categories.md)
+- [ADR-006 — Carry-forward semantics](docs/architecture/ADR-006-carry-forward-semantics.md)
 
 The [engineering log](docs/engineering-log.md) records how each mission was
 built and why the trade-offs were made.
@@ -141,7 +178,7 @@ built and why the trade-offs were made.
 ## Testing
 
 ```bash
-pytest -v          # 77 tests
+pytest -v          # 101 tests
 ruff check src tests
 ruff format --check src tests
 ```
@@ -165,8 +202,9 @@ scoped, shippable unit of work.
 - **Mission 005 — Task & Profit Hardening** ✅ closed category set, task
   validation, no silent truncation, `Decimal` money, encapsulated tracker
   state, validation on load, schema v3
-- **Mission 006 — Close the loop** — carry unfinished work into the next
-  day's plan, one review per date, a single `life-os today` command
+- **Mission 006 — Close the Loop** ✅ carried work reaches the next day's
+  plan, one review per date, `life-os today`, real immutability on
+  `DailyReview` and `AppState`
 - **Future — AI assistant layer** — generate tasks from goal context,
   surface execution patterns, answer "what should I do next?"
 
