@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from life_os.commitments import CommitmentStatus, close_by_title, record_misses
 from life_os.profit import ProfitTracker
 from life_os.review import DailyReview
 from life_os.storage import (
@@ -289,3 +290,138 @@ def test_unwritable_path_raises_storage_error_not_a_raw_oserror(tmp_path):
 
     with pytest.raises(StorageError, match="Could not write state file"):
         save_state(_state_with("10.00"), blocker / "state.json")
+
+
+def test_commitments_round_trip_through_the_state_file(tmp_path):
+    path = tmp_path / "state.json"
+    ledger, _ = record_misses((), ["call the supplier", "post content"], on=date(2026, 9, 1))
+    ledger, _ = close_by_title(ledger, ["post content"], on=date(2026, 9, 2))
+
+    save_state(AppState(profit=ProfitTracker(), commitments=ledger), path)
+    loaded = load_state(path)
+
+    assert [c.id for c in loaded.commitments] == [1, 2]
+    assert loaded.commitments[0].is_open
+    assert loaded.commitments[0].opened_on == date(2026, 9, 1)
+    assert loaded.commitments[1].status is CommitmentStatus.DONE
+    assert loaded.commitments[1].closed_on == date(2026, 9, 2)
+
+
+def test_app_state_commitments_are_immutable():
+    ledger, _ = record_misses((), ["a"], on=date(2026, 9, 1))
+    state = AppState(profit=ProfitTracker(), commitments=list(ledger))
+
+    assert isinstance(state.commitments, tuple)
+    with pytest.raises(AttributeError):
+        state.commitments.append("nope")
+
+
+def test_a_version_3_file_seeds_the_ledger_from_the_last_reviews_misses(tmp_path):
+    """Upgrading must not lose the work that was being carried."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "profit_entries": [],
+                "reviews": [
+                    {
+                        "review_date": "2026-09-01",
+                        "completed": [],
+                        "incomplete": [{"title": "old miss", "category": "unspecified"}],
+                        "top_priority_tomorrow": "x",
+                        "note": "",
+                    },
+                    {
+                        "review_date": "2026-09-03",
+                        "completed": [],
+                        "incomplete": [
+                            {"title": "still open", "category": "unspecified"},
+                            {"title": "also open", "category": "unspecified"},
+                        ],
+                        "top_priority_tomorrow": "y",
+                        "note": "",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_state(path)
+
+    assert [c.title for c in loaded.commitments] == ["still open", "also open"]
+    assert all(c.opened_on == date(2026, 9, 3) for c in loaded.commitments)
+    assert [c.id for c in loaded.commitments] == [1, 2]
+
+
+def test_seeding_does_not_resurrect_older_reviews(tmp_path):
+    """Walking all of history would reopen months of dead items."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "reviews": [
+                    {
+                        "review_date": "2026-01-01",
+                        "completed": [],
+                        "incomplete": [{"title": "ancient history", "category": "carried"}],
+                        "top_priority_tomorrow": "x",
+                        "note": "",
+                    },
+                    {
+                        "review_date": "2026-09-03",
+                        "completed": [],
+                        "incomplete": [],
+                        "top_priority_tomorrow": "y",
+                        "note": "",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_state(path).commitments == ()
+
+
+def test_a_version_1_file_seeds_an_empty_ledger(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"schema_version": 1, "profit_entries": []}), encoding="utf-8")
+
+    assert load_state(path).commitments == ()
+
+
+def test_an_empty_ledger_persisted_at_v4_is_not_reseeded(tmp_path):
+    """Dropping the last open item must stay dropped across a reload."""
+    path = tmp_path / "state.json"
+    state = AppState(profit=ProfitTracker(), reviews=[_review(day=1)], commitments=())
+
+    save_state(state, path)
+
+    assert load_state(path).commitments == ()
+
+
+def test_malformed_commitment_raises_storage_error(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "commitments": [{"id": 0, "title": "bad id", "opened_on": "2026-09-01"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageError, match="Malformed commitment"):
+        load_state(path)
+
+
+def test_commitments_must_be_a_list(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"schema_version": 4, "commitments": {"id": 1}}), encoding="utf-8")
+
+    with pytest.raises(StorageError, match="'commitments' must be a list"):
+        load_state(path)

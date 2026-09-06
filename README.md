@@ -7,7 +7,8 @@ A personal operating system for goals, execution, income, and review.
 Life OS turns ambition into a repeatable structure. Instead of relying on
 motivation, it generates a daily task plan from your active goals, breaks
 90-day goals into weekly milestones, tracks income, and closes the loop
-with an end-of-day review whose unfinished work lands in tomorrow's plan.
+with an end-of-day review whose unfinished work becomes a tracked
+commitment — one that ages, gets finished, or gets deliberately dropped.
 
 **Plan → Execute → Track → Review → Repeat.**
 
@@ -48,9 +49,35 @@ You said the priority was: ship the landing page
 ```
 
 Carried work is deliberately exempt from the three-goal limit — finishing
-badly should not shrink tomorrow's capacity — but past three carried
-tasks Life OS says so out loud
+badly should not shrink tomorrow's capacity — but past three open
+commitments Life OS says so out loud
 ([ADR-006](docs/architecture/ADR-006-carry-forward-semantics.md)).
+
+See everything you still owe, and close it:
+
+```bash
+$ life-os open
+Open commitments (2)
+==============================================
+  [1] call the supplier  (carried 9 days)  * stale 7+ days, finish it or drop it
+  [4] shot the reel  (carried 1 day)
+
+Close one with: life-os done <id>    Abandon one with: life-os drop <id>
+
+$ life-os done 4
+Done: [4] shot the reel  (carried 1 day)
+1 still open.
+
+$ life-os drop 1
+Dropped: [1] call the supplier  (carried 9 days)
+Nothing left outstanding.
+```
+
+Missing the same thing nine days running is **one commitment, nine days
+old** — not nine items aged zero. Unfinished work is tracked as a
+`Commitment` with identity, an age, and two ways to end; dropping
+something is a real decision, not a failure to type it again
+([ADR-007](docs/architecture/ADR-007-commitment-ledger.md)).
 
 Generate a plan from goals alone, with no state involved:
 
@@ -127,7 +154,7 @@ Data lives in `~/.life-os/state.json` by default; override with
 | Module | File | What it does |
 |---|---|---|
 | Task Engine | `src/life_os/tasks.py` | Generates a daily plan: revenue, skill, and maintenance tasks from up to three active goals |
-| Carry-forward | `src/life_os/review.py` | Selects what today inherits from the last review, and flags an overloaded pile |
+| Commitment Ledger | `src/life_os/commitments.py` | Unfinished work as tracked entities: identity, age, staleness, done/dropped |
 | Goal System | `src/life_os/goals.py` | Breaks a 90-day goal into weekly milestones; reports the current week |
 | Profit Tracker | `src/life_os/profit.py` | Logs income entries in exact `Decimal` cents; running totals and date-range summaries |
 | Review System | `src/life_os/review.py` | End-of-day review (one per date), weekly stats |
@@ -161,6 +188,9 @@ Design rules, enforced across every module and documented in
 - **Only commands that are about history load state** — domain modules are
   pure, `storage.py` is the single filesystem boundary
   ([ADR-006](docs/architecture/ADR-006-carry-forward-semantics.md))
+- **Entities where identity matters, values everywhere else** — a task is a
+  value, an unfinished obligation is an entity
+  ([ADR-007](docs/architecture/ADR-007-commitment-ledger.md))
 - Every module ships with tests covering happy path, invalid input, and boundaries
 
 ### Decision records
@@ -171,6 +201,7 @@ Design rules, enforced across every module and documented in
 - [ADR-004 — Represent money as Decimal](docs/architecture/ADR-004-decimal-money.md)
 - [ADR-005 — Task categories are a closed set](docs/architecture/ADR-005-task-categories.md)
 - [ADR-006 — Carry-forward semantics](docs/architecture/ADR-006-carry-forward-semantics.md)
+- [ADR-007 — Unfinished work is an entity](docs/architecture/ADR-007-commitment-ledger.md)
 
 The [engineering log](docs/engineering-log.md) records how each mission was
 built and why the trade-offs were made.
@@ -178,7 +209,7 @@ built and why the trade-offs were made.
 ## Testing
 
 ```bash
-pytest -v          # 101 tests
+pytest -v          # 149 tests
 ruff check src tests
 ruff format --check src tests
 ```
@@ -205,15 +236,20 @@ scoped, shippable unit of work.
 - **Mission 006 — Close the Loop** ✅ carried work reaches the next day's
   plan, one review per date, `life-os today`, real immutability on
   `DailyReview` and `AppState`
+- **Mission 007 — Commitment Ledger** ✅ unfinished work as entities with
+  identity, age, and staleness; `open` / `done` / `drop`; schema v4
 - **Future — AI assistant layer** — generate tasks from goal context,
   surface execution patterns, answer "what should I do next?"
 
 ### State file versioning
 
 The state file carries a `schema_version`. Versions 1 (profit only) and
-2 (adds reviews) upgrade cleanly to version 3 on read: float amounts
-convert to exact `Decimal` cents, and pre-[ADR-005](docs/architecture/ADR-005-task-categories.md)
-review categories map to `unspecified`. A version this build does not
+2 (adds reviews) upgrade cleanly on read: float amounts convert to exact
+`Decimal` cents, pre-[ADR-005](docs/architecture/ADR-005-task-categories.md)
+review categories map to `unspecified`, and a file written before version
+4 has its commitment ledger seeded from the last review's unfinished work
+(that review only — walking all of history would resurrect months of dead
+items). A version this build does not
 recognize is rejected rather than partially read — a file written by a
 newer build must never be silently loaded and saved back with fields
 dropped. Likewise, an unknown task category or a non-positive amount in

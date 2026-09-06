@@ -15,6 +15,9 @@ Usage:
     life-os profit report
     life-os goals plan --title "Launch Life OS" --start 2026-09-01
     life-os review log --done "..." --missed "..." --priority "..."
+    life-os open
+    life-os done 7
+    life-os drop 3
 """
 
 import argparse
@@ -23,13 +26,20 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from life_os.commitments import (
+    CARRY_WARNING_THRESHOLD,
+    STALE_AFTER_DAYS,
+    Commitment,
+    CommitmentStatus,
+    close_by_id,
+    close_by_title,
+    open_items,
+    record_misses,
+    stale_items,
+)
 from life_os.goals import Goal, current_milestone, generate_milestones
 from life_os.review import (
-    CARRY_WARNING_THRESHOLD,
-    CarryForward,
     DailyReview,
-    carried_forward,
-    carry_forward,
     latest_review_before,
     summarize_week,
     upsert_review,
@@ -145,6 +155,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     review_sub.add_parser("week", help="show the last 7 days of reviews")
 
+    subcommands.add_parser("open", help="list everything you still owe")
+
+    done_cmd = subcommands.add_parser("done", help="close an open commitment")
+    done_cmd.add_argument("id", type=int, metavar="ID", help="the commitment id from `open`")
+
+    drop_cmd = subcommands.add_parser("drop", help="deliberately abandon an open commitment")
+    drop_cmd.add_argument("id", type=int, metavar="ID", help="the commitment id from `open`")
+
     return parser
 
 
@@ -161,25 +179,35 @@ def _print_plan(plan) -> None:
             print(f"  - {task.title}")
 
 
-def _print_carry(carry: CarryForward) -> None:
-    """Render inherited work, loudly when there is too much of it."""
-    if carry.is_empty:
+def _print_commitments(
+    commitments: tuple[Commitment, ...], today: date, *, header: bool = True
+) -> None:
+    """Render what you still owe, oldest first, staleness inline.
+
+    One list with one count rather than separate stale and fresh
+    blocks: two counts that have to be added together is a worse
+    answer to "how much do I owe" than one number.
+    """
+    if not commitments:
         return
 
-    if carry.is_overloaded:
+    stale = {c.id for c in stale_items(commitments, today)}
+
+    if len(commitments) > CARRY_WARNING_THRESHOLD:
+        print(f"!  {len(commitments)} open commitments - you are behind, not planning fresh.")
         print(
-            f"!  Carrying {carry.count} tasks from {carry.source_date} - "
-            "you are behind, not planning fresh."
-        )
-        print(
-            f"!  More than {CARRY_WARNING_THRESHOLD} carried is the signal to cut scope, "
+            f"!  More than {CARRY_WARNING_THRESHOLD} open is the signal to cut scope, "
             "not to add a goal."
         )
         print()
 
-    print(f"CARRIED ({carry.count}) from {carry.source_date}")
-    for task in carry.tasks:
-        print(f"  - {task.title}")
+    if header:
+        print(f"CARRYING {len(commitments)} open commitment(s)")
+    for c in commitments:
+        age = c.age_days(today)
+        days = "day" if age == 1 else "days"
+        mark = f"  * stale {STALE_AFTER_DAYS}+ days, finish it or drop it" if c.id in stale else ""
+        print(f"  [{c.id}] {c.title}  (carried {age} {days}){mark}")
 
 
 def _run_tasks(args) -> int:
@@ -198,13 +226,12 @@ def _run_today(args) -> int:
     state = load_state(args.state_file)
     today = date.today()
 
-    carry = carried_forward(state.reviews, today)
     plan = generate_tasks(args.goal)
 
     print(f"{today:%A, %B %d}")
     print("=" * 46)
 
-    _print_carry(carry)
+    _print_commitments(open_items(state.commitments), today)
 
     print("\nTODAY'S PLAN")
     if not args.goal:
@@ -215,7 +242,7 @@ def _run_today(args) -> int:
     if last is not None:
         print(f"\nYou said the priority was: {last.top_priority_tomorrow}")
 
-    total = carry.count + plan.total_tasks
+    total = len(open_items(state.commitments)) + plan.total_tasks
     print(f"\n{total} things on the table today.")
     return 0
 
@@ -282,7 +309,16 @@ def _run_review(args) -> int:
             note=args.note,
         )
         reviews, replaced = upsert_review(state.reviews, review)
-        save_state(AppState(profit=state.profit, reviews=reviews), args.state_file)
+
+        # Close first, then open: work reported done settles the
+        # commitment it belonged to before today's misses are recorded.
+        ledger, closed = close_by_title(state.commitments, args.done, on=review.review_date)
+        ledger, opened = record_misses(ledger, args.missed, on=review.review_date)
+
+        save_state(
+            AppState(profit=state.profit, reviews=reviews, commitments=ledger),
+            args.state_file,
+        )
 
         rate = review.completion_rate * 100
         print(f"Review logged for {review.review_date}")
@@ -294,11 +330,20 @@ def _run_review(args) -> int:
             )
         print(f"  Completed: {len(review.completed)}/{review.total_tasks}  ({rate:.0f}%)")
 
-        carried = carry_forward(review)
-        if carried:
-            print(f"\n  Carrying forward to tomorrow ({len(carried)}):")
-            for task in carried:
-                print(f"    - {task.title}")
+        if closed:
+            print(f"\n  Closed {len(closed)} commitment(s):")
+            for c in closed:
+                age = c.age_days(review.review_date)
+                print(f"    [{c.id}] {c.title}  (carried {age} days)")
+
+        if opened:
+            print(f"\n  Opened {len(opened)} new commitment(s):")
+            for c in opened:
+                print(f"    [{c.id}] {c.title}")
+
+        outstanding = open_items(ledger)
+        if outstanding:
+            print(f"\n  {len(outstanding)} still open. See them with: life-os open")
 
         print(f"\n  Tomorrow's #1: {review.top_priority_tomorrow}")
         return 0
@@ -333,14 +378,54 @@ def _run_review(args) -> int:
         f"{summary.completion_rate * 100:.0f}% completion"
     )
 
-    latest = recent[-1]
-    carried = carry_forward(latest)
-    if carried:
-        print(f"\n  Still carrying forward from {latest.review_date}:")
-        for task in carried:
-            print(f"    - {task.title}")
-    print(f"\n  Next up: {latest.top_priority_tomorrow}")
+    outstanding = open_items(state.commitments)
+    if outstanding:
+        print(f"\n  {len(outstanding)} still open. See them with: life-os open")
+    print(f"\n  Next up: {recent[-1].top_priority_tomorrow}")
     return 0
+
+
+def _run_open(args) -> int:
+    state = load_state(args.state_file)
+    outstanding = open_items(state.commitments)
+
+    if not outstanding:
+        print("Nothing outstanding. Everything you logged as missed has been closed.")
+        return 0
+
+    today = date.today()
+    print(f"Open commitments ({len(outstanding)})")
+    print("=" * 46)
+    _print_commitments(outstanding, today, header=False)
+    print("\nClose one with: life-os done <id>    Abandon one with: life-os drop <id>")
+    return 0
+
+
+def _close_commitment(args, status: CommitmentStatus, verb: str) -> int:
+    state = load_state(args.state_file)
+    today = date.today()
+
+    ledger, closed = close_by_id(state.commitments, args.id, on=today, status=status)
+    save_state(
+        AppState(profit=state.profit, reviews=state.reviews, commitments=ledger),
+        args.state_file,
+    )
+
+    age = closed.age_days(today)
+    days = "day" if age == 1 else "days"
+    print(f"{verb} [{closed.id}] {closed.title}  (carried {age} {days})")
+
+    remaining = open_items(ledger)
+    print(f"{len(remaining)} still open." if remaining else "Nothing left outstanding.")
+    return 0
+
+
+def _run_done(args) -> int:
+    return _close_commitment(args, CommitmentStatus.DONE, "Done:")
+
+
+def _run_drop(args) -> int:
+    return _close_commitment(args, CommitmentStatus.DROPPED, "Dropped:")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -351,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "today": _run_today,
         "tasks": _run_tasks,
+        "open": _run_open,
+        "done": _run_done,
+        "drop": _run_drop,
         "profit": _run_profit,
         "goals": _run_goals,
         "review": _run_review,

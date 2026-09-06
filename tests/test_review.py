@@ -3,10 +3,7 @@ from datetime import date
 import pytest
 
 from life_os.review import (
-    CARRY_WARNING_THRESHOLD,
     DailyReview,
-    carried_forward,
-    carry_forward,
     latest_review_before,
     summarize_week,
     upsert_review,
@@ -52,23 +49,6 @@ def test_review_requires_a_top_priority_for_tomorrow():
             incomplete=[],
             top_priority_tomorrow="   ",
         )
-
-
-def test_carry_forward_returns_incomplete_tasks():
-    missed = [_task("call supplier"), _task("post content")]
-    review = _review(completed=[_task("done")], incomplete=missed)
-
-    assert carry_forward(review) == missed
-
-
-def test_carry_forward_returns_a_copy_not_the_original_list():
-    missed = [_task("call supplier")]
-    review = _review(completed=[], incomplete=missed)
-
-    result = carry_forward(review)
-    result.append(_task("injected"))
-
-    assert len(review.incomplete) == 1
 
 
 def test_summarize_week_aggregates_across_reviews():
@@ -120,38 +100,6 @@ def test_latest_review_before_is_strict_so_a_day_never_inherits_itself():
 def test_latest_review_before_returns_none_with_no_earlier_review():
     assert latest_review_before([_dated(5)], date(2026, 9, 2)) is None
     assert latest_review_before([], date(2026, 9, 2)) is None
-
-
-def test_carried_forward_takes_the_incomplete_tasks_and_their_date():
-    carry = carried_forward([_dated(1), _dated(3, missed=2)], date(2026, 9, 4))
-
-    assert carry.count == 2
-    assert carry.source_date == date(2026, 9, 3)
-    assert [t.title for t in carry.tasks] == ["missed 0 on day 3", "missed 1 on day 3"]
-
-
-def test_carried_forward_is_empty_on_a_first_run():
-    carry = carried_forward([], date(2026, 9, 4))
-
-    assert carry.is_empty
-    assert carry.count == 0
-    assert carry.source_date is None
-    assert not carry.is_overloaded
-
-
-def test_carry_is_overloaded_only_past_the_threshold():
-    at_limit = carried_forward([_dated(1, missed=CARRY_WARNING_THRESHOLD)], date(2026, 9, 2))
-    over = carried_forward([_dated(1, missed=CARRY_WARNING_THRESHOLD + 1)], date(2026, 9, 2))
-
-    assert not at_limit.is_overloaded
-    assert over.is_overloaded
-
-
-def test_carry_forward_tasks_are_immutable():
-    carry = carried_forward([_dated(1)], date(2026, 9, 2))
-
-    with pytest.raises(AttributeError):
-        carry.tasks.append(_task("injected"))
 
 
 def test_upsert_adds_a_review_for_a_new_date():

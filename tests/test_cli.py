@@ -1,9 +1,10 @@
+import json
 from datetime import date, timedelta
 
 import pytest
 
 from life_os.cli import main
-from life_os.review import CARRY_WARNING_THRESHOLD
+from life_os.commitments import CARRY_WARNING_THRESHOLD, STALE_AFTER_DAYS
 
 
 def _run(capsys, argv):
@@ -315,14 +316,17 @@ def test_today_carries_yesterdays_misses_into_the_plan(tmp_path, capsys):
     code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
 
     assert code == 0
-    assert "CARRIED (1)" in out
+    assert "CARRYING 1 open commitment(s)" in out
     assert "wrote the email sequence" in out
     assert "Execute a direct revenue action for: grow the store" in out
     assert "ship the landing page" in out
     assert "4 things on the table today" in out
 
 
-def test_today_does_not_inherit_a_review_logged_earlier_the_same_day(tmp_path, capsys):
+def test_a_commitment_opened_today_is_shown_as_open_the_same_day(tmp_path, capsys):
+    """The ledger answers "what do I still owe", not "what did I
+    inherit" - so work missed this morning is open this afternoon
+    (ADR-007). Mission 006's strict carry could not express this."""
     state = tmp_path / "state.json"
     _run(
         capsys,
@@ -341,8 +345,8 @@ def test_today_does_not_inherit_a_review_logged_earlier_the_same_day(tmp_path, c
     code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
 
     assert code == 0
-    assert "CARRIED" not in out
-    assert "todays own miss" not in out
+    assert "todays own miss" in out
+    assert "carried 0 days" in out
 
 
 def test_today_warns_when_the_carried_pile_is_too_big(tmp_path, capsys):
@@ -396,7 +400,7 @@ def test_today_does_not_warn_at_the_threshold(tmp_path, capsys):
     _, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
 
     assert "you are behind" not in out
-    assert f"CARRIED ({CARRY_WARNING_THRESHOLD})" in out
+    assert f"CARRYING {CARRY_WARNING_THRESHOLD} open commitment(s)" in out
 
 
 def test_today_is_friendly_on_a_first_run(tmp_path, capsys):
@@ -405,7 +409,7 @@ def test_today_is_friendly_on_a_first_run(tmp_path, capsys):
     code, out, _ = _run(capsys, ["--state-file", str(state), "today"])
 
     assert code == 0
-    assert "CARRIED" not in out
+    assert "CARRYING" not in out
     assert "no active goals" in out
 
 
@@ -457,3 +461,181 @@ def test_unwritable_state_file_reports_an_error_not_a_traceback(tmp_path, capsys
 
     assert code == 1
     assert "Could not write state file" in err
+
+
+def _miss(capsys, state, titles, days_ago=1):
+    argv = ["--state-file", str(state), "review", "log"]
+    for t in titles:
+        argv += ["--missed", t]
+    argv += ["--priority", "keep going", "--date", str(date.today() - timedelta(days=days_ago))]
+    return _run(capsys, argv)
+
+
+def test_open_is_friendly_when_nothing_is_outstanding(tmp_path, capsys):
+    code, out, _ = _run(capsys, ["--state-file", str(tmp_path / "s.json"), "open"])
+
+    assert code == 0
+    assert "Nothing outstanding" in out
+
+
+def test_open_lists_commitments_with_ids_and_ages(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["call the supplier", "post content"], days_ago=3)
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert code == 0
+    assert "[1] call the supplier" in out
+    assert "[2] post content" in out
+    assert "carried 3 days" in out
+    assert "life-os done <id>" in out
+
+
+def test_done_closes_a_commitment_and_it_stays_closed(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["call the supplier", "post content"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "done", "1"])
+    assert code == 0
+    assert "Done: [1] call the supplier" in out
+    assert "1 still open" in out
+
+    _, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+    assert "call the supplier" not in out
+    assert "[2] post content" in out
+
+
+def test_drop_is_a_real_outcome(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["a thing i no longer care about"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "drop", "1"])
+
+    assert code == 0
+    assert "Dropped: [1]" in out
+    assert "Nothing left outstanding" in out
+
+
+def test_closing_an_unknown_id_is_an_error_not_a_silent_no_op(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["a"])
+
+    code, _, err = _run(capsys, ["--state-file", str(state), "done", "99"])
+
+    assert code == 1
+    assert "No commitment with id 99" in err
+
+
+def test_closing_the_same_commitment_twice_is_an_error(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["a"])
+    _run(capsys, ["--state-file", str(state), "done", "1"])
+
+    code, _, err = _run(capsys, ["--state-file", str(state), "done", "1"])
+
+    assert code == 1
+    assert "already done" in err
+
+
+def test_missing_the_same_thing_daily_ages_one_commitment(tmp_path, capsys):
+    """The whole point of the ledger: four days of the same miss is one
+    commitment aged four days, not four items aged zero."""
+    state = tmp_path / "s.json"
+    for days_ago in (4, 3, 2, 1):
+        _miss(capsys, state, ["call the supplier"], days_ago=days_ago)
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert code == 0
+    assert "Open commitments (1)" in out
+    assert "carried 4 days" in out
+
+
+def test_review_log_done_closes_the_matching_commitment(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["wrote the email sequence"], days_ago=2)
+
+    code, out, _ = _run(
+        capsys,
+        [
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "Wrote The Email Sequence",
+            "--priority",
+            "next thing",
+        ],
+    )
+
+    assert code == 0
+    assert "Closed 1 commitment(s)" in out
+    assert "[1] wrote the email sequence" in out
+
+    _, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+    assert "Nothing outstanding" in out
+
+
+def test_review_log_reports_newly_opened_commitments(tmp_path, capsys):
+    state = tmp_path / "s.json"
+
+    code, out, _ = _miss(capsys, state, ["shot the reel"])
+
+    assert code == 0
+    assert "Opened 1 new commitment(s)" in out
+    assert "[1] shot the reel" in out
+    assert "1 still open" in out
+
+
+def test_a_stale_commitment_is_flagged_in_today(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["ancient obligation"], days_ago=STALE_AFTER_DAYS + 2)
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today"])
+
+    assert code == 0
+    assert "stale" in out
+    assert "finish it or drop it" in out
+
+
+def test_a_fresh_commitment_is_not_flagged_stale(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["recent obligation"], days_ago=STALE_AFTER_DAYS - 1)
+
+    _, out, _ = _run(capsys, ["--state-file", str(state), "today"])
+
+    assert "stale" not in out
+    assert "recent obligation" in out
+
+
+def test_a_version_3_state_file_upgrades_and_still_shows_carried_work(tmp_path, capsys):
+    """Upgrading must not lose what the old build was carrying."""
+    state = tmp_path / "s.json"
+    state.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "profit_entries": [],
+                "reviews": [
+                    {
+                        "review_date": str(date.today() - timedelta(days=2)),
+                        "completed": [],
+                        "incomplete": [
+                            {"title": "carried from the old build", "category": "unspecified"}
+                        ],
+                        "top_priority_tomorrow": "ship it",
+                        "note": "",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today"])
+
+    assert code == 0
+    assert "carried from the old build" in out
+    assert "carried 2 days" in out
+    assert "ship it" in out
