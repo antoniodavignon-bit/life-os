@@ -277,3 +277,34 @@ def test_an_empty_ledger_degrades_cleanly():
 def test_match_key_and_normalize_title_agree_on_whitespace():
     assert normalize_title(" a   b ") == "a b"
     assert match_key(" A   B ") == "a b"
+
+
+def test_record_misses_respects_an_id_floor():
+    """Commitments share an id space with day plan items (ADR-008), and
+    the ledger cannot see the ids a plan has handed out."""
+    ledger, opened = record_misses((), ["call the supplier"], on=date(2026, 9, 7), first_id=10)
+
+    assert [c.id for c in opened] == [10]
+    assert [c.id for c in ledger] == [10]
+
+
+def test_the_floor_never_lowers_ids_below_the_ledger():
+    ledger, _ = record_misses((), ["first"], on=date(2026, 9, 7))
+    ledger, opened = record_misses(ledger, ["second"], on=date(2026, 9, 7), first_id=1)
+
+    assert [c.id for c in opened] == [2]
+
+
+def test_successive_misses_under_a_floor_keep_climbing():
+    _, opened = record_misses(
+        (), ["one", "two", "three"], on=date(2026, 9, 7), first_id=7
+    )
+
+    assert [c.id for c in opened] == [7, 8, 9]
+
+
+def test_omitting_the_floor_keeps_the_ledger_only_behaviour():
+    ledger, _ = record_misses((), ["first"], on=date(2026, 9, 7))
+    _, opened = record_misses(ledger, ["second"], on=date(2026, 9, 7))
+
+    assert [c.id for c in opened] == [2]
