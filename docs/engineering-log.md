@@ -361,6 +361,107 @@ commitment, nine days old, flagged stale, closable or droppable by id.
 
 ---
 
+## Mission 008 — The Day Plan
+
+**Problem.** Life OS could describe a day and record a day, but not run
+one. `life-os today` generated nine tasks and printed them; nothing
+recorded them. Finishing three of those tasks at 11am could not be
+stated, because `done <id>` closes commitments and a generated task has
+no id.
+
+The tell, from a real terminal, two commands apart:
+
+```
+$ today
+... 9 items, no ids ...
+$ owe
+Nothing outstanding.
+```
+
+Nine things to do and nothing outstanding. Both true under the old
+model, which is how you know the model was missing a concept rather
+than a feature.
+
+**Decision: a day plan is an entity; a plan item is not a commitment.**
+The shortcut was to write the nine generated tasks into the commitment
+ledger and inherit ids, `open`, and `done <id>` for free. Rejected. A
+`Commitment` is an obligation you *failed* to meet — that is what makes
+`opened_on` mean anything and what `CARRY_WARNING_THRESHOLD` counts.
+Nine fresh items every morning would mean owing work you had not yet
+had a chance to do, and the "you are behind" warning, which fires above
+three, would fire every single day. A warning that is always on is not
+a warning. So `day.py` holds the middle of the loop, and unfinished
+items become commitments at review time exactly as before.
+
+**Decision: one id space, two collections.** `life-os done 4` must mean
+one thing. Two id spaces would have been cheaper to build and worse to
+type at. Day plans are retained rather than pruned, which is what keeps
+the allocator monotonic without a stored counter.
+
+**Two bugs the fixtures did not catch.** Both surfaced on the first run
+against a copy of the real state file, and neither was visible in 218
+passing tests.
+
+The first: `record_misses` allocated from the ledger alone. On a
+planned day the first miss was handed id 1 — already a plan item — so
+`done 1` had two answers and the commitment was unreachable by id. One
+id space means *every* allocator has to know about it. It now takes a
+`first_id` floor.
+
+The second: generated titles repeat verbatim, so the day after missing
+"Improve a skill related to: X" the plan generates that exact string
+again while the commitment is still open. The same obligation appeared
+twice in one screen and in every count. The carried copy wins, because
+it is the one with an age; `today` and `open` now hide an open plan
+item that duplicates an open commitment, while always showing closed
+ones. The stored plan is untouched — this is a view decision, and
+hiding recorded work to tidy a list would be a data decision.
+
+The general lesson is the one this repo keeps relearning: fixtures
+agree with the assumptions that built them. The real file did not.
+
+**Decision: `review log` reads the day instead of asking for it.**
+Items closed done are completed, items still open are incomplete, and
+dropped items are *neither* — recording a dropped item as missed would
+reopen it as a commitment that night and silently overturn the decision
+to drop it. `--done` and `--missed` survive as additions, and an
+explicit `--done` settles the plan item it names so the two cannot
+disagree. `--priority` stays required: it is the one thing the system
+genuinely cannot infer.
+
+This also repaired the correction path. `upsert_review` replaces a
+review, so before the plan was authoritative, fixing one entry meant
+retyping the other eight or silently losing them.
+
+**Reviews got their categories back.** Titles typed by hand are
+honestly `UNSPECIFIED`, but items the plan generated are not. The
+review now stamps the real category when the title came from the plan,
+which is data the system always had and used to throw away.
+
+**Goal persistence, folded in.** `DayPlan` records the goals it was
+generated from, so `today` with no `--goal` reuses the last plan's
+goals. A dedicated `goals add`/`list`/`archive` surface was considered
+and deferred: the plan already has to record its goals to be
+reproducible, and a second store of active goals is a second thing to
+keep in sync. `MAX_ACTIVE_GOALS` now limits something real instead of
+the length of an argument list.
+
+**Migration.** A pre-v5 file simply has no day plans. Unlike the v4
+commitment migration there is nothing to seed from — no earlier version
+ever recorded which of a day's items you closed, and reconstructing it
+from reviews would invent per-item history the user never stated. The
+seam that *does* need handling is the reverse order: every day in an
+old file has a review and no plan, so a plan built for such a date
+starts from what that review already recorded. Without it the first
+`today` after upgrading would show work already reported done as still
+open, and the next `review log` would replace an accurate review with
+an empty one. Verified end-to-end against a real v4 file.
+
+**Result.** 231 tests. Finish something at 11am, `life-os done 4`, and
+the system knows — and closing out the day takes one required argument.
+
+---
+
 ## Open threads
 
 - **Correcting a review does not retract its commitments.**
@@ -377,6 +478,12 @@ commitment, nine days old, flagged stale, closable or droppable by id.
   task per category per goal, so a single active goal yields 3 tasks,
   not 9. Closing the gap is a product decision — templates per
   category, or requiring three active goals — not a bug fix.
+- **Nothing prunes day plans.** State grows by nine items a day, and
+  the id allocator's monotonicity currently depends on that. Pruning
+  needs a stored high-water mark first.
+- **A dropped plan item is invisible in `review week`.** It is excluded
+  from the review entirely, so a day spent deliberately cutting scope
+  reads the same as a day spent doing nothing.
 - **No presentation layer beyond the CLI.** The domain modules would
   support a web UI or API unchanged; nothing has been built.
 - **The AI layer is unstarted.** The intended shape is generating tasks

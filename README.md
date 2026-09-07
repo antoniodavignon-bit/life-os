@@ -5,10 +5,12 @@
 A personal operating system for goals, execution, income, and review.
 
 Life OS turns ambition into a repeatable structure. Instead of relying on
-motivation, it generates a daily task plan from your active goals, breaks
-90-day goals into weekly milestones, tracks income, and closes the loop
-with an end-of-day review whose unfinished work becomes a tracked
-commitment — one that ages, gets finished, or gets deliberately dropped.
+motivation, it generates a daily task plan from your active goals, gives
+every item an id you can close the moment you finish it, breaks 90-day
+goals into weekly milestones, tracks income, and closes the loop with an
+end-of-day review that reads the day rather than asking you to retype
+it. Unfinished work becomes a tracked commitment — one that ages, gets
+finished, or gets deliberately dropped.
 
 **Plan → Execute → Track → Review → Repeat.**
 
@@ -21,57 +23,81 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Run your day — what you carried in, what you planned, what you said mattered:
+Run your day. `today` builds the plan once, numbers every item, and
+remembers the goals you used:
 
 ```bash
 $ life-os today --goal "grow the store" --goal "get in shape"
-Sunday, September 06
+Monday, September 07
 ==============================================
-!  Carrying 4 tasks from 2026-09-05 - you are behind, not planning fresh.
-!  More than 3 carried is the signal to cut scope, not to add a goal.
-
-CARRIED (4) from 2026-09-05
-  - wrote the email sequence
-  - called the supplier
-  - fixed checkout
-  - shot the reel
+CARRYING 2 open commitment(s)
+  [1] call the supplier  (carried 2 days)
+  [2] shoot the reel  (carried 2 days)
 
 TODAY'S PLAN
 
 REVENUE
-  - Execute a direct revenue action for: grow the store
-  - Execute a direct revenue action for: get in shape
+  [3] Execute a direct revenue action for: grow the store
+  [4] Execute a direct revenue action for: get in shape
+
+SKILL
+  [5] Improve a skill related to: grow the store
+  [6] Improve a skill related to: get in shape
   ...
 
 You said the priority was: ship the landing page
 
-10 things on the table today.
+0 of 6 done  (0%)
+Close one with: life-os done <id>    Abandon one with: life-os drop <id>
+
+8 things on the table today.
 ```
+
+Run it again tomorrow with no arguments and it plans from the same
+goals. Close an item the moment you finish it:
+
+```bash
+$ life-os done 3
+Done: [3] Execute a direct revenue action for: grow the store
+7 still open.
+```
+
+A plan item is not a commitment: today's fresh work is not owed yet, and
+treating it as owed would make the "you are behind" warning fire every
+morning. Unfinished items become commitments at review time and not
+before ([ADR-008](docs/architecture/ADR-008-the-day-plan.md)).
 
 Carried work is deliberately exempt from the three-goal limit — finishing
 badly should not shrink tomorrow's capacity — but past three open
 commitments Life OS says so out loud
 ([ADR-006](docs/architecture/ADR-006-carry-forward-semantics.md)).
 
-See everything you still owe, and close it:
+See everything you still owe — today's plan and the ledger, one numbered
+list:
 
 ```bash
 $ life-os open
-Open commitments (2)
+Open (7)
 ==============================================
+TODAY'S PLAN - 5 open
+  [4] Execute a direct revenue action for: get in shape
+  [5] Improve a skill related to: grow the store
+  ...
+
+CARRYING 2 open commitment(s)
   [1] call the supplier  (carried 9 days)  * stale 7+ days, finish it or drop it
-  [4] shot the reel  (carried 1 day)
+  [2] shoot the reel  (carried 1 day)
 
 Close one with: life-os done <id>    Abandon one with: life-os drop <id>
 
-$ life-os done 4
-Done: [4] shot the reel  (carried 1 day)
-1 still open.
-
-$ life-os drop 1
-Dropped: [1] call the supplier  (carried 9 days)
-Nothing left outstanding.
+$ life-os drop 2
+Dropped: [2] shoot the reel  (carried 1 day)
+6 still open.
 ```
+
+Plan items and commitments draw from one id space, so `done 4` never has
+to ask which list the 4 came from. Work already carried is listed once,
+in the carried list, where it has an age.
 
 Missing the same thing nine days running is **one commitment, nine days
 old** — not nine items aged zero. Unfinished work is tracked as a
@@ -122,21 +148,31 @@ Launch Life OS  [business]
   ...
 ```
 
-Close out the day and carry unfinished work forward:
+Close out the day. On a planned day the review reads what you closed, so
+the only thing it needs is tomorrow's priority:
 
 ```bash
-$ life-os review log \
-    --done "posted content" --done "called supplier" \
-    --missed "wrote email sequence" \
-    --priority "ship the landing page"
-Review logged for 2026-09-01
-  Completed: 2/3  (67%)
+$ life-os review log --priority "ship the landing page"
+Review logged for 2026-09-07
+  Read from today's plan: 1 done.
+  Completed: 1/6  (17%)
 
-  Carrying forward to tomorrow (1):
-    - wrote email sequence
+  Opened 5 new commitment(s):
+    [9] Execute a direct revenue action for: get in shape
+    [10] Improve a skill related to: grow the store
+    ...
+
+  7 still open. See them with: life-os open
 
   Tomorrow's #1: ship the landing page
+```
 
+`--done` and `--missed` still work, as additions to what the plan
+already knows. Items you *dropped* count as neither: deciding something
+no longer matters is a decision, and recording it as missed would reopen
+it as a commitment that night.
+
+```bash
 $ life-os review week
 Last 7 days
 ==============================================
@@ -154,6 +190,7 @@ Data lives in `~/.life-os/state.json` by default; override with
 | Module | File | What it does |
 |---|---|---|
 | Task Engine | `src/life_os/tasks.py` | Generates a daily plan: revenue, skill, and maintenance tasks from up to three active goals |
+| Day Plan | `src/life_os/day.py` | The day in flight: the generated plan persisted with per-item identity, status, and the goals behind it |
 | Commitment Ledger | `src/life_os/commitments.py` | Unfinished work as tracked entities: identity, age, staleness, done/dropped |
 | Goal System | `src/life_os/goals.py` | Breaks a 90-day goal into weekly milestones; reports the current week |
 | Profit Tracker | `src/life_os/profit.py` | Logs income entries in exact `Decimal` cents; running totals and date-range summaries |
@@ -191,6 +228,9 @@ Design rules, enforced across every module and documented in
 - **Entities where identity matters, values everywhere else** — a task is a
   value, an unfinished obligation is an entity
   ([ADR-007](docs/architecture/ADR-007-commitment-ledger.md))
+- **One id space across every list a user types an id from** — a number
+  the CLI shows means exactly one thing
+  ([ADR-008](docs/architecture/ADR-008-the-day-plan.md))
 - Every module ships with tests covering happy path, invalid input, and boundaries
 
 ### Decision records
@@ -202,6 +242,7 @@ Design rules, enforced across every module and documented in
 - [ADR-005 — Task categories are a closed set](docs/architecture/ADR-005-task-categories.md)
 - [ADR-006 — Carry-forward semantics](docs/architecture/ADR-006-carry-forward-semantics.md)
 - [ADR-007 — Unfinished work is an entity](docs/architecture/ADR-007-commitment-ledger.md)
+- [ADR-008 — The day plan](docs/architecture/ADR-008-the-day-plan.md)
 
 The [engineering log](docs/engineering-log.md) records how each mission was
 built and why the trade-offs were made.
@@ -209,7 +250,7 @@ built and why the trade-offs were made.
 ## Testing
 
 ```bash
-pytest -v          # 149 tests
+pytest -v          # 231 tests
 ruff check src tests
 ruff format --check src tests
 ```
@@ -238,6 +279,9 @@ scoped, shippable unit of work.
   `DailyReview` and `AppState`
 - **Mission 007 — Commitment Ledger** ✅ unfinished work as entities with
   identity, age, and staleness; `open` / `done` / `drop`; schema v4
+- **Mission 008 — The Day Plan** ✅ `today` persists the day with
+  per-item ids, `done` / `drop` close plan items live, `review log`
+  reads the day instead of asking for it, active goals persist, schema v5
 - **Future — AI assistant layer** — generate tasks from goal context,
   surface execution patterns, answer "what should I do next?"
 
@@ -249,7 +293,11 @@ The state file carries a `schema_version`. Versions 1 (profit only) and
 review categories map to `unspecified`, and a file written before version
 4 has its commitment ledger seeded from the last review's unfinished work
 (that review only — walking all of history would resurrect months of dead
-items). A version this build does not
+items). A file written before version 5
+has no day plans — no earlier version recorded which of a day's items you
+closed, and reconstructing that from reviews would invent history you
+never stated; instead, a plan built for a date that already has a review
+starts from what that review recorded. A version this build does not
 recognize is rejected rather than partially read — a file written by a
 newer build must never be silently loaded and saved back with fields
 dropped. Likewise, an unknown task category or a non-positive amount in

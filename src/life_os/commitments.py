@@ -182,11 +182,23 @@ def find(commitments: Iterable[Commitment], commitment_id: int) -> Commitment | 
 
 
 def record_misses(
-    commitments: Iterable[Commitment], titles: Iterable[str], *, on: date
+    commitments: Iterable[Commitment],
+    titles: Iterable[str],
+    *,
+    on: date,
+    first_id: int | None = None,
 ) -> tuple[tuple[Commitment, ...], tuple[Commitment, ...]]:
     """Open a commitment for each missed title that isn't already open.
 
     Returns the new ledger and the commitments newly opened.
+
+    ``first_id`` raises the floor for newly allocated ids. Commitments
+    share one id space with day plan items (ADR-008), and the ledger
+    alone cannot see the ids a plan has already handed out — without
+    the floor, a commitment opened at review time can be given a number
+    a plan item is already using, and ``life-os done 2`` stops having
+    one answer. Omitted, allocation falls back to the ledger's own
+    maximum, which is correct whenever no plan exists.
 
     A title that matches something already open is left untouched —
     ``opened_on`` keeps pointing at the day the obligation first
@@ -202,6 +214,7 @@ def record_misses(
     ledger = list(commitments)
     live = {c.key for c in ledger if c.is_open}
     opened: list[Commitment] = []
+    floor = first_id if first_id is not None else 1
 
     for raw in titles:
         title = normalize_title(raw)
@@ -212,7 +225,10 @@ def record_misses(
         if key in live:
             continue
 
-        commitment = Commitment(id=next_id(ledger), title=title, opened_on=on)
+        new_id = max(next_id(ledger), floor)
+        floor = new_id + 1
+
+        commitment = Commitment(id=new_id, title=title, opened_on=on)
         ledger.append(commitment)
         opened.append(commitment)
         live.add(key)

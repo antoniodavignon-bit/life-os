@@ -5,6 +5,9 @@ import pytest
 
 from life_os.cli import main
 from life_os.commitments import CARRY_WARNING_THRESHOLD, STALE_AFTER_DAYS
+from life_os.day import build_plan
+from life_os.profit import ProfitTracker
+from life_os.storage import AppState, load_state, save_state
 
 
 def _run(capsys, argv):
@@ -547,7 +550,10 @@ def test_missing_the_same_thing_daily_ages_one_commitment(tmp_path, capsys):
     code, out, _ = _run(capsys, ["--state-file", str(state), "open"])
 
     assert code == 0
-    assert "Open commitments (1)" in out
+    # `open` covers today's plan as well as the ledger since ADR-008,
+    # so the header counts both rather than naming only commitments.
+    assert "Open (1)" in out
+    assert "CARRYING 1 open commitment(s)" in out
     assert "carried 4 days" in out
 
 
@@ -639,3 +645,441 @@ def test_a_version_3_state_file_upgrades_and_still_shows_carried_work(tmp_path, 
     assert "carried from the old build" in out
     assert "carried 2 days" in out
     assert "ship it" in out
+
+
+# --- the day plan (ADR-008) ------------------------------------------
+
+
+def _seed_earlier_plan(state_path, goals, days_ago=1, first_id=1):
+    """Store a plan dated in the past.
+
+    `today` has no --date flag by design, so exercising anything that
+    reads across days means putting the earlier day there directly.
+    """
+    plan = build_plan(date.today() - timedelta(days=days_ago), list(goals), first_id=first_id)
+    save_state(AppState(profit=ProfitTracker(), day_plans=(plan,)), state_path)
+    return plan
+
+
+def test_today_gives_every_planned_item_an_id(tmp_path, capsys):
+    state = tmp_path / "s.json"
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    for expected in ("[1]", "[2]", "[3]"):
+        assert expected in out
+    assert "0 of 3 done" in out
+
+
+def test_running_today_twice_shows_the_same_plan_not_a_new_one(tmp_path, capsys):
+    """The plan for a date is generated once. Re-running is a read."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    assert "[4]" not in out
+    assert len(load_state(state).day_plans) == 1
+
+
+def test_done_closes_a_plan_item_and_it_stays_closed(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "done", "1"])
+    assert code == 0
+    assert "Done: [1]" in out
+    assert "2 still open" in out
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    assert "(done)" in out
+    assert "1 of 3 done" in out
+
+
+def test_drop_is_a_real_outcome_for_a_plan_item_too(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "drop", "2"])
+
+    assert code == 0
+    assert "Dropped: [2]" in out
+
+    _, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    assert "(dropped)" in out
+    assert "1 dropped" in out
+
+
+def test_closing_an_unknown_plan_id_is_an_error(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, _, err = _run(capsys, ["--state-file", str(state), "done", "99"])
+
+    assert code == 1
+    assert "99" in err
+
+
+def test_an_id_from_an_earlier_day_says_so_rather_than_reporting_it_unknown(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _seed_earlier_plan(state, ["yesterday's goal"])
+
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "today's goal"])
+    code, _, err = _run(capsys, ["--state-file", str(state), "done", "1"])
+
+    assert code == 1
+    assert "earlier day" in err
+
+
+def test_today_reuses_the_goals_you_last_planned_with(tmp_path, capsys):
+    """The whole reason the shell alias existed."""
+    state = tmp_path / "s.json"
+    _seed_earlier_plan(state, ["Maestro University"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today"])
+
+    assert code == 0
+    assert "Maestro University" in out
+    assert "goals you last used" in out
+
+
+def test_today_is_still_friendly_with_no_goals_anywhere(tmp_path, capsys):
+    state = tmp_path / "s.json"
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today"])
+
+    assert code == 0
+    assert "no active goals" in out
+
+
+def test_today_refuses_more_goals_than_the_daily_maximum(tmp_path, capsys):
+    state = tmp_path / "s.json"
+
+    code, _, err = _run(
+        capsys,
+        ["--state-file", str(state), "today"]
+        + [arg for goal in ("a", "b", "c", "d") for arg in ("--goal", goal)],
+    )
+
+    assert code == 1
+    assert "daily maximum" in err
+
+
+def test_different_goals_point_at_replan_rather_than_silently_rebuilding(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "get in shape"])
+
+    assert code == 0
+    assert "--replan" in out
+    assert "grow the store" in out
+
+
+def test_replan_keeps_work_already_closed(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "done", "1"])
+
+    code, out, _ = _run(
+        capsys,
+        ["--state-file", str(state), "today", "--replan", "--goal", "grow the store",
+         "--goal", "get in shape"],
+    )
+
+    assert code == 0
+    assert "Replanned today" in out
+    assert "(done)" in out
+    assert load_state(state).day_plans[0].find(1).status.value == "done"
+
+
+def test_open_lists_todays_plan_alongside_carried_commitments(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["call the supplier"], days_ago=2)
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert code == 0
+    assert "TODAY'S PLAN - 3 open" in out
+    assert "CARRYING 1 open commitment(s)" in out
+    assert "Open (4)" in out
+
+
+def test_open_says_the_day_is_clear_rather_than_that_nothing_was_missed(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    for item_id in ("1", "2", "3"):
+        _run(capsys, ["--state-file", str(state), "done", item_id])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert code == 0
+    assert "Today's plan is clear" in out
+
+
+def test_review_log_reads_the_day_instead_of_asking_for_it(tmp_path, capsys):
+    """One required argument on a planned day."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "done", "1"])
+
+    code, out, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+
+    assert code == 0
+    assert "Read from today's plan: 1 done" in out
+    assert "Completed: 1/3" in out
+    assert "Opened 2 new commitment(s)" in out
+
+
+def test_a_dropped_item_is_neither_completed_nor_reopened_as_a_commitment(tmp_path, capsys):
+    """Recording a dropped item as missed would reopen it that night
+    and quietly overturn the decision to drop it."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "drop", "2"])
+
+    code, out, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+
+    assert code == 0
+    assert "1 dropped and not counted" in out
+    assert "Completed: 0/2" in out
+    assert "Opened 2 new commitment(s)" in out
+
+    titles = [c.title for c in load_state(state).commitments]
+    assert "Improve a skill related to: grow the store" not in titles
+
+
+def test_correcting_a_review_does_not_require_retyping_the_day(tmp_path, capsys):
+    """The trap ADR-008 closes: upsert_review replaces, so before the
+    plan was the source of truth a one-item fix meant retyping all of
+    them."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "done", "1"])
+    _run(capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"])
+
+    _run(capsys, ["--state-file", str(state), "done", "2"])
+    code, out, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+
+    assert code == 0
+    assert "Replaced the previous review" in out
+    assert "Completed: 2/3" in out
+    # The commitment opened by the first review is settled by the second.
+    assert "Closed 1 commitment(s)" in out
+
+
+def test_an_explicit_done_also_settles_the_plan_item_it_names(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(
+        capsys,
+        [
+            "--state-file", str(state), "review", "log",
+            "--done", "execute a direct revenue action for: grow the store",
+            "--priority", "ship it",
+        ],
+    )
+
+    assert code == 0
+    assert "Completed: 1/3" in out
+    assert load_state(state).day_plans[0].find(1).status.value == "done"
+
+
+def test_work_reported_done_is_never_also_recorded_as_missed(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    _run(
+        capsys,
+        [
+            "--state-file", str(state), "review", "log",
+            "--done", "Execute a direct revenue action for: grow the store",
+            "--priority", "ship it",
+        ],
+    )
+
+    review = load_state(state).reviews[0]
+    done = {t.title for t in review.completed}
+    missed = {t.title for t in review.incomplete}
+    assert not done & missed
+
+
+def test_a_review_read_from_the_plan_records_real_categories(tmp_path, capsys):
+    """Typed titles are honestly UNSPECIFIED; items the plan generated
+    are not, and pretending otherwise threw away what it knew."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "done", "1"])
+    _run(capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"])
+
+    review = load_state(state).reviews[0]
+
+    assert [t.category.value for t in review.completed] == ["revenue"]
+    assert sorted(t.category.value for t in review.incomplete) == ["maintenance", "skill"]
+
+
+def test_review_log_for_an_unplanned_date_still_works_from_flags_alone(tmp_path, capsys):
+    """Days before ADR-008, and any day planned outside Life OS."""
+    state = tmp_path / "s.json"
+    yesterday = date.today() - timedelta(days=1)
+
+    code, out, _ = _run(
+        capsys,
+        [
+            "--state-file", str(state), "review", "log",
+            "--date", yesterday.isoformat(),
+            "--done", "shipped the thing",
+            "--missed", "called the supplier",
+            "--priority", "ship it",
+        ],
+    )
+
+    assert code == 0
+    assert "Read from today's plan" not in out
+    assert "Completed: 1/2" in out
+
+
+def test_plan_items_and_commitments_never_share_an_id(tmp_path, capsys):
+    """`life-os done 4` must mean exactly one thing."""
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["call the supplier", "email the landlord"], days_ago=3)
+
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    loaded = load_state(state)
+    commitment_ids = {c.id for c in loaded.commitments}
+    item_ids = {i.id for p in loaded.day_plans for i in p.items}
+
+    assert commitment_ids == {1, 2}
+    assert item_ids == {3, 4, 5}
+    assert not commitment_ids & item_ids
+
+
+def test_done_resolves_a_commitment_when_the_id_is_not_on_todays_plan(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["call the supplier"], days_ago=2)
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "done", "1"])
+
+    assert code == 0
+    assert "call the supplier" in out
+    assert "carried 2 days" in out
+    assert "3 still open" in out
+
+
+def test_a_plan_agrees_with_a_review_already_logged_for_that_day(tmp_path, capsys):
+    """The upgrade seam: every day in a pre-ADR-008 state file has a
+    review but no plan. Planning that day must not show work already
+    reported done as still open, or the next review would replace an
+    accurate record with an empty one."""
+    state = tmp_path / "s.json"
+    _run(
+        capsys,
+        [
+            "--state-file", str(state), "review", "log",
+            "--done", "Execute a direct revenue action for: grow the store",
+            "--priority", "ship it",
+        ],
+    )
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    assert "(done)" in out
+    assert "1 of 3 done" in out
+    assert "already logged them" in out
+
+
+def test_re_reviewing_after_that_does_not_lose_the_work(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _run(
+        capsys,
+        [
+            "--state-file", str(state), "review", "log",
+            "--done", "Execute a direct revenue action for: grow the store",
+            "--priority", "ship it",
+        ],
+    )
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+
+    assert code == 0
+    assert "Completed: 1/3" in out
+    titles = {t.title for t in load_state(state).reviews[0].completed}
+    assert "Execute a direct revenue action for: grow the store" in titles
+
+
+def test_a_commitment_opened_at_review_never_reuses_a_plan_item_id(tmp_path, capsys):
+    """Caught against real data. `record_misses` allocated from the
+    ledger alone, so the first miss of a planned day was handed id 1 —
+    already in use by a plan item. `life-os done 1` then had two
+    answers and the commitment became unreachable by id."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    _run(capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"])
+
+    loaded = load_state(state)
+    item_ids = {i.id for p in loaded.day_plans for i in p.items}
+    commitment_ids = {c.id for c in loaded.commitments}
+
+    assert item_ids == {1, 2, 3}
+    assert commitment_ids == {4, 5, 6}
+    assert not item_ids & commitment_ids
+
+
+def test_work_already_carried_is_not_listed_twice(tmp_path, capsys):
+    """Generated titles repeat word for word. Yesterday's miss and
+    today's fresh item are one obligation, and the carried list is
+    where it belongs because that is the copy with an age."""
+    state = tmp_path / "s.json"
+    title = "Execute a direct revenue action for: grow the store"
+    _miss(capsys, state, [title], days_ago=2)
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    assert code == 0
+    assert out.count(title) == 1
+    assert "carried 2 days" in out
+    # Two fresh items plus one carried commitment, not four things.
+    assert "3 things on the table today." in out
+
+
+def test_owe_does_not_list_carried_work_twice_either(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    title = "Improve a skill related to: grow the store"
+    _miss(capsys, state, [title], days_ago=1)
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert code == 0
+    assert out.count(title) == 1
+    assert "Open (3)" in out
+
+
+def test_a_shadowed_item_is_still_stored_on_the_plan(tmp_path, capsys):
+    """Hiding it is a view decision; the day's record keeps everything."""
+    state = tmp_path / "s.json"
+    title = "Improve a skill related to: grow the store"
+    _miss(capsys, state, [title], days_ago=1)
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    stored = load_state(state).day_plans[0]
+
+    assert len(stored.items) == 3
+    assert title in [i.title for i in stored.items]

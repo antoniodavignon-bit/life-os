@@ -24,6 +24,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from life_os.commitments import Commitment, CommitmentStatus
+from life_os.day import DayPlan, ItemStatus, PlanItem
 from life_os.profit import ProfitEntry, ProfitTracker
 from life_os.review import DailyReview
 from life_os.tasks import Category, Task
@@ -34,14 +35,17 @@ from life_os.tasks import Category, Task
 #            task categories are drawn from the closed Category set.
 # Version 4: adds the commitment ledger — unfinished work as tracked
 #            entities rather than repeated task titles (ADR-007).
+# Version 5: adds day plans — the generated day persisted with per-item
+#            identity and status, so progress is recordable during the
+#            day rather than only at review time (ADR-008).
 #
 # Bumps are deliberate even when a change is additive. Reading an older
 # file under newer code is a clean upgrade. But a newer file read by
 # older code would load, silently drop what it didn't understand, and
 # destroy it on the next save. Rejecting loudly beats losing data
 # quietly — the same principle ADR-003 applies to corrupt files.
-SCHEMA_VERSION = 4
-SUPPORTED_VERSIONS = (1, 2, 3, 4)
+SCHEMA_VERSION = 5
+SUPPORTED_VERSIONS = (1, 2, 3, 4, 5)
 
 # Before ADR-005, the CLI stamped review tasks with the outcome
 # ("completed" / "carried") in the category field — which described
@@ -73,10 +77,12 @@ class AppState:
     profit: ProfitTracker
     reviews: tuple[DailyReview, ...] = ()
     commitments: tuple[Commitment, ...] = ()
+    day_plans: tuple[DayPlan, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reviews", tuple(self.reviews))
         object.__setattr__(self, "commitments", tuple(self.commitments))
+        object.__setattr__(self, "day_plans", tuple(self.day_plans))
 
 
 def _entry_to_dict(entry: ProfitEntry) -> dict:
@@ -193,6 +199,64 @@ def _seed_commitments_from_reviews(reviews: tuple[DailyReview, ...]) -> tuple[Co
     )
 
 
+def _plan_item_to_dict(item: PlanItem) -> dict:
+    return {
+        "id": item.id,
+        "title": item.title,
+        "category": item.category.value,
+        "status": item.status.value,
+        "closed_on": item.closed_on.isoformat() if item.closed_on else None,
+    }
+
+
+def _plan_item_from_dict(raw: dict) -> PlanItem:
+    if not isinstance(raw, dict):
+        raise StorageError(f"Plan item must be an object, got {raw!r}")
+
+    try:
+        closed_raw = raw.get("closed_on")
+        raw_category = str(raw["category"])
+        return PlanItem(
+            id=raw["id"],
+            title=str(raw["title"]),
+            category=LEGACY_CATEGORY_ALIASES.get(raw_category, raw_category),
+            status=str(raw.get("status", ItemStatus.OPEN.value)),
+            closed_on=date.fromisoformat(closed_raw) if closed_raw else None,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StorageError(f"Malformed plan item in state file: {raw!r} ({exc})") from exc
+
+
+def _day_plan_to_dict(plan: DayPlan) -> dict:
+    return {
+        "plan_date": plan.plan_date.isoformat(),
+        "goals": list(plan.goals),
+        "items": [_plan_item_to_dict(i) for i in plan.items],
+    }
+
+
+def _day_plan_from_dict(raw: dict) -> DayPlan:
+    if not isinstance(raw, dict):
+        raise StorageError(f"Day plan must be an object, got {raw!r}")
+
+    goals_raw = raw.get("goals", [])
+    if not isinstance(goals_raw, list):
+        raise StorageError(f"Day plan 'goals' must be a list, got {goals_raw!r}")
+
+    items_raw = raw.get("items", [])
+    if not isinstance(items_raw, list):
+        raise StorageError(f"Day plan 'items' must be a list, got {items_raw!r}")
+
+    try:
+        return DayPlan(
+            plan_date=date.fromisoformat(raw["plan_date"]),
+            goals=tuple(str(g) for g in goals_raw),
+            items=tuple(_plan_item_from_dict(i) for i in items_raw),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StorageError(f"Malformed day plan in state file: {raw!r} ({exc})") from exc
+
+
 def serialize(state: AppState) -> dict:
     """Convert application state into a JSON-safe dict."""
     return {
@@ -200,6 +264,7 @@ def serialize(state: AppState) -> dict:
         "profit_entries": [_entry_to_dict(e) for e in state.profit.entries],
         "reviews": [_review_to_dict(r) for r in state.reviews],
         "commitments": [_commitment_to_dict(c) for c in state.commitments],
+        "day_plans": [_day_plan_to_dict(p) for p in state.day_plans],
     }
 
 
@@ -210,8 +275,9 @@ def deserialize(raw: dict) -> AppState:
     an empty review list, version 1 and 2 amounts stored as JSON floats
     are converted to exact ``Decimal`` cents, and a file written before
     version 4 has its commitment ledger seeded from the last review's
-    unfinished work. A version this build does not know is rejected
-    rather than partially read.
+    unfinished work. A file written before version 5 simply has no day
+    plans. A version this build does not know is rejected rather than
+    partially read.
     """
     if not isinstance(raw, dict):
         raise StorageError("State file must contain a JSON object")
@@ -235,6 +301,15 @@ def deserialize(raw: dict) -> AppState:
     if commitments_raw is not None and not isinstance(commitments_raw, list):
         raise StorageError("'commitments' must be a list")
 
+    # A pre-v5 file simply has no day plans. Unlike the v4 commitment
+    # migration there is nothing to seed from: a day plan records which
+    # of today's generated items you closed, and no earlier version
+    # ever recorded that. Reconstructing it from reviews would invent
+    # per-item history the user never stated.
+    plans_raw = raw.get("day_plans", [])
+    if not isinstance(plans_raw, list):
+        raise StorageError("'day_plans' must be a list")
+
     tracker = ProfitTracker(entries=[_entry_from_dict(e) for e in entries_raw])
     reviews = tuple(_review_from_dict(r) for r in reviews_raw)
 
@@ -244,7 +319,14 @@ def deserialize(raw: dict) -> AppState:
     else:
         commitments = tuple(_commitment_from_dict(c) for c in commitments_raw)
 
-    return AppState(profit=tracker, reviews=reviews, commitments=commitments)
+    day_plans = tuple(_day_plan_from_dict(p) for p in plans_raw)
+
+    return AppState(
+        profit=tracker,
+        reviews=reviews,
+        commitments=commitments,
+        day_plans=day_plans,
+    )
 
 
 def load_state(path: Path = DEFAULT_STATE_PATH) -> AppState:

@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from life_os.commitments import CommitmentStatus, close_by_title, record_misses
+from life_os.day import ItemStatus, build_plan, close_item
 from life_os.profit import ProfitTracker
 from life_os.review import DailyReview
 from life_os.storage import (
@@ -424,4 +425,146 @@ def test_commitments_must_be_a_list(tmp_path):
     path.write_text(json.dumps({"schema_version": 4, "commitments": {"id": 1}}), encoding="utf-8")
 
     with pytest.raises(StorageError, match="'commitments' must be a list"):
+        load_state(path)
+
+
+# --- day plans (schema v5, ADR-008) ----------------------------------
+
+
+def _day_plan(plan_date: date = date(2026, 9, 7), first_id: int = 1):
+    return build_plan(plan_date, ["grow the store"], first_id=first_id)
+
+
+def test_day_plans_round_trip_through_the_state_file(tmp_path):
+    path = tmp_path / "state.json"
+    plan, _ = close_item(_day_plan(), 2, on=date(2026, 9, 7), status=ItemStatus.DROPPED)
+    plan, _ = close_item(plan, 1, on=date(2026, 9, 7))
+
+    save_state(AppState(profit=ProfitTracker(), day_plans=(plan,)), path)
+    loaded = load_state(path)
+
+    assert len(loaded.day_plans) == 1
+    restored = loaded.day_plans[0]
+    assert restored.plan_date == date(2026, 9, 7)
+    assert restored.goals == ("grow the store",)
+    assert [i.id for i in restored.items] == [1, 2, 3]
+    assert restored.find(1).status is ItemStatus.DONE
+    assert restored.find(1).closed_on == date(2026, 9, 7)
+    assert restored.find(2).status is ItemStatus.DROPPED
+    assert restored.find(3).is_open
+
+
+def test_plan_item_categories_survive_the_round_trip(tmp_path):
+    """Categories are what let a review record real work types instead
+    of UNSPECIFIED, so they have to come back off disk intact."""
+    path = tmp_path / "state.json"
+    save_state(AppState(profit=ProfitTracker(), day_plans=(_day_plan(),)), path)
+
+    restored = load_state(path).day_plans[0]
+
+    assert [i.category for i in restored.items] == [
+        Category.REVENUE,
+        Category.SKILL,
+        Category.MAINTENANCE,
+    ]
+
+
+def test_version_4_file_upgrades_cleanly_with_no_day_plans(tmp_path):
+    """A pre-v5 file has nothing to seed from: no earlier version ever
+    recorded which of a day's items you closed."""
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "profit_entries": [],
+                "reviews": [],
+                "commitments": [
+                    {
+                        "id": 1,
+                        "title": "call the supplier",
+                        "opened_on": "2026-09-05",
+                        "status": "open",
+                        "closed_on": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = load_state(path)
+
+    assert state.day_plans == ()
+    assert len(state.commitments) == 1
+
+    save_state(state, path)
+    assert json.loads(path.read_text())["schema_version"] == SCHEMA_VERSION
+
+
+def test_malformed_day_plan_raises_storage_error(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "profit_entries": [],
+                "reviews": [],
+                "commitments": [],
+                "day_plans": [{"goals": [], "items": []}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageError, match="Malformed day plan"):
+        load_state(path)
+
+
+def test_a_hand_edited_duplicate_item_id_is_rejected(tmp_path):
+    """ADR-003 sells a hand-editable state file, which only holds if
+    hand-edited nonsense is rejected on the way back in."""
+    path = tmp_path / "state.json"
+    item = {
+        "id": 1,
+        "title": "do the thing",
+        "category": "revenue",
+        "status": "open",
+        "closed_on": None,
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "profit_entries": [],
+                "reviews": [],
+                "commitments": [],
+                "day_plans": [
+                    {"plan_date": "2026-09-07", "goals": [], "items": [item, dict(item)]}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageError, match="unique"):
+        load_state(path)
+
+
+def test_day_plan_items_must_be_a_list(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "profit_entries": [],
+                "reviews": [],
+                "commitments": [],
+                "day_plans": [{"plan_date": "2026-09-07", "goals": [], "items": "nope"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StorageError, match="'items' must be a list"):
         load_state(path)
