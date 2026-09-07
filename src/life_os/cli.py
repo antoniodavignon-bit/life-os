@@ -335,10 +335,7 @@ def _run_today(args) -> int:
         state = _with_plan(state, plan)
         save_state(state, args.state_file)
         if seeded:
-            note = (
-                f"{len(seeded)} item(s) start done: you already logged them "
-                f"in today's review."
-            )
+            note = f"{len(seeded)} item(s) start done: you already logged them in today's review."
         elif not args.goal and remembered:
             note = "Planned from the goals you last used. Override with --goal."
     elif args.replan:

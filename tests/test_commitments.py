@@ -296,9 +296,7 @@ def test_the_floor_never_lowers_ids_below_the_ledger():
 
 
 def test_successive_misses_under_a_floor_keep_climbing():
-    _, opened = record_misses(
-        (), ["one", "two", "three"], on=date(2026, 9, 7), first_id=7
-    )
+    _, opened = record_misses((), ["one", "two", "three"], on=date(2026, 9, 7), first_id=7)
 
     assert [c.id for c in opened] == [7, 8, 9]
 

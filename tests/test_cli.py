@@ -785,8 +785,16 @@ def test_replan_keeps_work_already_closed(tmp_path, capsys):
 
     code, out, _ = _run(
         capsys,
-        ["--state-file", str(state), "today", "--replan", "--goal", "grow the store",
-         "--goal", "get in shape"],
+        [
+            "--state-file",
+            str(state),
+            "today",
+            "--replan",
+            "--goal",
+            "grow the store",
+            "--goal",
+            "get in shape",
+        ],
     )
 
     assert code == 0
@@ -884,9 +892,14 @@ def test_an_explicit_done_also_settles_the_plan_item_it_names(tmp_path, capsys):
     code, out, _ = _run(
         capsys,
         [
-            "--state-file", str(state), "review", "log",
-            "--done", "execute a direct revenue action for: grow the store",
-            "--priority", "ship it",
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "execute a direct revenue action for: grow the store",
+            "--priority",
+            "ship it",
         ],
     )
 
@@ -902,9 +915,14 @@ def test_work_reported_done_is_never_also_recorded_as_missed(tmp_path, capsys):
     _run(
         capsys,
         [
-            "--state-file", str(state), "review", "log",
-            "--done", "Execute a direct revenue action for: grow the store",
-            "--priority", "ship it",
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "Execute a direct revenue action for: grow the store",
+            "--priority",
+            "ship it",
         ],
     )
 
@@ -936,11 +954,18 @@ def test_review_log_for_an_unplanned_date_still_works_from_flags_alone(tmp_path,
     code, out, _ = _run(
         capsys,
         [
-            "--state-file", str(state), "review", "log",
-            "--date", yesterday.isoformat(),
-            "--done", "shipped the thing",
-            "--missed", "called the supplier",
-            "--priority", "ship it",
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--date",
+            yesterday.isoformat(),
+            "--done",
+            "shipped the thing",
+            "--missed",
+            "called the supplier",
+            "--priority",
+            "ship it",
         ],
     )
 
@@ -987,9 +1012,14 @@ def test_a_plan_agrees_with_a_review_already_logged_for_that_day(tmp_path, capsy
     _run(
         capsys,
         [
-            "--state-file", str(state), "review", "log",
-            "--done", "Execute a direct revenue action for: grow the store",
-            "--priority", "ship it",
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "Execute a direct revenue action for: grow the store",
+            "--priority",
+            "ship it",
         ],
     )
 
@@ -1006,9 +1036,14 @@ def test_re_reviewing_after_that_does_not_lose_the_work(tmp_path, capsys):
     _run(
         capsys,
         [
-            "--state-file", str(state), "review", "log",
-            "--done", "Execute a direct revenue action for: grow the store",
-            "--priority", "ship it",
+            "--state-file",
+            str(state),
+            "review",
+            "log",
+            "--done",
+            "Execute a direct revenue action for: grow the store",
+            "--priority",
+            "ship it",
         ],
     )
     _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])

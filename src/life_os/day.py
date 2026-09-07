@@ -244,9 +244,7 @@ def replan(existing: DayPlan, goals: list[str], *, first_id: int) -> DayPlan:
         if previous is not None:
             carried.append(previous)
         else:
-            carried.append(
-                PlanItem(id=next_id, title=item.title, category=item.category)
-            )
+            carried.append(PlanItem(id=next_id, title=item.title, category=item.category))
             next_id += 1
 
     surviving = {item.key for item in rebuilt.items}
