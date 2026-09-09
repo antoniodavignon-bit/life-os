@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import date, timedelta
 
 import pytest
@@ -1199,3 +1200,77 @@ def test_correcting_a_review_does_not_shrink_its_own_denominator(tmp_path, capsy
 
     assert code == 0
     assert "Completed: 2/3" in out
+
+
+def _count_after(out: str) -> int:
+    """The N from "N still open." / 0 for "Nothing left outstanding.\""""
+    if "Nothing left outstanding." in out:
+        return 0
+    return int(re.search(r"(\d+) still open\.", out).group(1))
+
+
+def _count_listed(out: str) -> int:
+    """The N from `open`'s "Open (N)" header / 0 when it reports clear."""
+    match = re.search(r"Open \((\d+)\)", out)
+    return int(match.group(1)) if match else 0
+
+
+def test_closing_something_reports_the_same_count_open_does(tmp_path, capsys):
+    """`drop` reported "17 still open" on a day with 9 commitments,
+    because it added today's raw plan items to the ledger and every one
+    of them was already a carried commitment. The number a command
+    prints after acting has to be the number `open` would show — that
+    agreement is the contract, whatever the number happens to be."""
+    state = tmp_path / "s.json"
+    _miss(
+        capsys,
+        state,
+        [
+            "Execute a direct revenue action for: grow the store",
+            "Improve a skill related to: grow the store",
+        ],
+        days_ago=1,
+    )
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    _, dropped, _ = _run(capsys, ["--state-file", str(state), "drop", "1"])
+    _, listed, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert _count_after(dropped) == _count_listed(listed)
+
+
+def test_closing_a_plan_item_counts_the_same_way(tmp_path, capsys):
+    state = tmp_path / "s.json"
+    _miss(capsys, state, ["Improve a skill related to: grow the store"], days_ago=1)
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    _, done_out, _ = _run(capsys, ["--state-file", str(state), "done", "2"])
+    _, listed, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    assert _count_after(done_out) == _count_listed(listed)
+
+
+def test_the_two_agree_on_a_day_that_is_entirely_carried_work(tmp_path, capsys):
+    """Antonio's actual case: every generated item shadowed, so the raw
+    plan added a full nine to every count."""
+    state = tmp_path / "s.json"
+    _miss(
+        capsys,
+        state,
+        [
+            "Execute a direct revenue action for: grow the store",
+            "Improve a skill related to: grow the store",
+            "Stabilize your environment for: grow the store",
+        ],
+        days_ago=1,
+    )
+    _, plan_out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    assert "already in the carried list" in plan_out
+
+    _, dropped, _ = _run(capsys, ["--state-file", str(state), "drop", "2"])
+    _, listed, _ = _run(capsys, ["--state-file", str(state), "open"])
+
+    # Two commitments left, plus the plan item the drop un-shadowed.
+    # Before the fix this printed 5: the ledger plus all three raw
+    # plan items, every one of them already counted as a commitment.
+    assert _count_after(dropped) == _count_listed(listed) == 3

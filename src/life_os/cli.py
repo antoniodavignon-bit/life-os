@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import sys
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -211,6 +212,23 @@ def _next_shared_id(state: AppState) -> int:
     which is what keeps this monotonic.
     """
     return max(next_id(state.commitments), day_module.max_item_id(state.day_plans) + 1)
+
+
+def _still_open(plan: DayPlan | None, commitments: Iterable[Commitment]) -> int:
+    """How much is outstanding, counted the way `open` displays it.
+
+    Adding today's raw open items to the ledger double-counts every
+    generated item that is already an open commitment — and on a day
+    where the whole plan is carried work, that is every item on it.
+    `done` and `drop` have to agree with `open`, or closing one thing
+    appears to leave more behind than you started with.
+    """
+    outstanding = open_items(commitments)
+    if plan is None:
+        return len(outstanding)
+
+    owed = {c.key for c in outstanding}
+    return len(outstanding) + len(day_module.without_owed(plan, owed).open_items)
 
 
 def _with_plan(state: AppState, plan: DayPlan) -> AppState:
@@ -661,7 +679,7 @@ def _close_commitment(args, status: CommitmentStatus, verb: str) -> int:
         save_state(state, args.state_file)
 
         print(f"{verb} [{closed_item.id}] {closed_item.title}")
-        remaining = len(new_plan.open_items) + len(open_items(state.commitments))
+        remaining = _still_open(new_plan, state.commitments)
         print(f"{remaining} still open." if remaining else "Nothing left outstanding.")
         return 0
 
@@ -688,7 +706,7 @@ def _close_commitment(args, status: CommitmentStatus, verb: str) -> int:
     days = "day" if age == 1 else "days"
     print(f"{verb} [{closed.id}] {closed.title}  (carried {age} {days})")
 
-    remaining = len(open_items(ledger)) + (len(plan.open_items) if plan is not None else 0)
+    remaining = _still_open(plan, ledger)
     print(f"{remaining} still open." if remaining else "Nothing left outstanding.")
     return 0
 
