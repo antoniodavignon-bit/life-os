@@ -1,18 +1,66 @@
 # Life OS
 
 [![tests](https://github.com/antoniodavignon-bit/life-os/actions/workflows/tests.yml/badge.svg)](https://github.com/antoniodavignon-bit/life-os/actions/workflows/tests.yml)
+![python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![tests](https://img.shields.io/badge/tests-238-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
-A personal operating system for goals, execution, income, and review.
+**A command-line personal operating system for goals, execution, income, and
+review — built in Python, in public, one scoped mission at a time.**
 
-Life OS turns ambition into a repeatable structure. Instead of relying on
-motivation, it generates a daily task plan from your active goals, gives
-every item an id you can close the moment you finish it, breaks 90-day
-goals into weekly milestones, tracks income, and closes the loop with an
-end-of-day review that reads the day rather than asking you to retype
-it. Unfinished work becomes a tracked commitment — one that ages, gets
-finished, or gets deliberately dropped.
+Life OS generates a daily plan from your active goals, gives every item an id
+you can close the moment you finish it, tracks unfinished work as commitments
+that age until they are finished or deliberately dropped, and closes the day
+with a review that reads what you did rather than asking you to retype it.
 
 **Plan → Execute → Track → Review → Repeat.**
+
+I use it every morning. Every design decision below came from that.
+
+---
+
+### What this repository demonstrates
+
+| | |
+|---|---|
+| **238 tests** | Happy path, invalid input, and boundaries for every module. No module ships without them. |
+| **8 Architecture Decision Records** | Every non-obvious choice written down with its alternatives and its costs — including the ones that turned out to be wrong. |
+| **CI on Python 3.11 / 3.12 / 3.13** | Lint, format check, and the full suite on every push and pull request. |
+| **5 schema versions, all migrating** | Real user data survived every one. A file from a newer build is rejected rather than silently loaded and saved back with fields dropped. |
+| **A domain layer with no I/O** | Pure functions, frozen dataclasses, injectable clocks. `storage.py` is the only module that touches disk. |
+| **An engineering log** | What changed, why, and what the trade-off was — written for another engineer reading the repo cold. |
+
+### Three bugs worth reading about
+
+All three were invisible to a passing test suite and surfaced only when the
+code met a real state file. They are written up in
+[`docs/engineering-log.md`](docs/engineering-log.md) and in the commits.
+
+- **Two id spaces that quietly overlapped.** Plan items and commitments each
+  allocated from their own maximum, so `life-os done 4` could mean two
+  different things and one of them became unreachable.
+- **One obligation displayed twice.** Generated task titles repeat verbatim,
+  so yesterday's missed work and today's fresh item were the same string —
+  listed twice, and counted twice in everything downstream.
+- **A completion rate that contradicted the screen.** The day view filtered
+  work already carried; the review did not. It reported 1 of 10 for a day the
+  user had just been shown as 4 items.
+
+The fix for the second one is a view filter, not a data change — the stored
+plan still keeps every item. Hiding recorded work to tidy a list would be a
+data decision wearing a display decision's clothes.
+
+### Design rules the code actually follows
+
+- Entities where identity matters, values everywhere else — a task is a value,
+  an unfinished obligation is an entity with an age and two ways to end
+- Refuse input rather than truncate it; silent data loss is the enemy
+- One id space across every list a user types an id from
+- `Decimal` for money, never `float`
+- Closed enums over free-form strings
+- Empty input degrades to a zeroed result, never an exception
+
+---
 
 ## Quickstart
 
