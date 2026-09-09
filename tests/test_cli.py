@@ -1118,3 +1118,84 @@ def test_a_shadowed_item_is_still_stored_on_the_plan(tmp_path, capsys):
 
     assert len(stored.items) == 3
     assert title in [i.title for i in stored.items]
+
+
+def test_the_logged_count_matches_the_count_today_displayed(tmp_path, capsys):
+    """Found on real data. `today` hides an open plan item that is
+    already a carried commitment, but `review log` read the raw plan and
+    counted it anyway — so the screen said 0 of 4 and the review logged
+    1 of 10. A rate that contradicts the screen is the ADR-006 defect
+    again: arithmetically fine, factually wrong."""
+    state = tmp_path / "s.json"
+    carried = "Execute a direct revenue action for: grow the store"
+    _miss(capsys, state, [carried], days_ago=1)
+
+    _, plan_out, _ = _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    assert "0 of 2 done" in plan_out
+
+    code, out, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+
+    assert code == 0
+    assert "Completed: 0/2" in out
+
+
+def test_work_carried_in_is_not_recorded_as_missed_a_second_time(tmp_path, capsys):
+    """One obligation, one commitment (ADR-007). The review must not
+    re-report it every day it stays open, or `review week` counts the
+    same miss repeatedly."""
+    state = tmp_path / "s.json"
+    carried = "Improve a skill related to: grow the store"
+    _miss(capsys, state, [carried], days_ago=2)
+
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"])
+
+    loaded = load_state(state)
+    today_review = max(loaded.reviews, key=lambda r: r.review_date)
+    assert carried not in [t.title for t in today_review.incomplete]
+
+    # The ledger still holds it, still aging, still one entry.
+    matching = [c for c in loaded.commitments if c.title == carried]
+    assert len(matching) == 1
+    assert matching[0].is_open
+
+
+def test_carried_work_reported_done_still_counts_and_closes(tmp_path, capsys):
+    """Hiding it from the count must not hide it from credit."""
+    state = tmp_path / "s.json"
+    carried = "Execute a direct revenue action for: grow the store"
+    _miss(capsys, state, [carried], days_ago=1)
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+
+    code, out, _ = _run(
+        capsys,
+        ["--state-file", str(state), "review", "log", "--done", carried, "--priority", "ship it"],
+    )
+
+    assert code == 0
+    assert "Closed 1 commitment(s)" in out
+    assert "Completed: 1/3" in out
+
+
+def test_correcting_a_review_does_not_shrink_its_own_denominator(tmp_path, capsys):
+    """The reason the filter compares strictly before the review date.
+    A commitment opened on this date was opened by an earlier run of
+    this same review; excluding those would let a correction turn
+    1 of 3 into 2 of 2."""
+    state = tmp_path / "s.json"
+    _run(capsys, ["--state-file", str(state), "today", "--goal", "grow the store"])
+    _run(capsys, ["--state-file", str(state), "done", "1"])
+    _, first, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+    assert "Completed: 1/3" in first
+
+    _run(capsys, ["--state-file", str(state), "done", "2"])
+    code, out, _ = _run(
+        capsys, ["--state-file", str(state), "review", "log", "--priority", "ship it"]
+    )
+
+    assert code == 0
+    assert "Completed: 2/3" in out

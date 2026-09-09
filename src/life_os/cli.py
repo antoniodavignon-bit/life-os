@@ -475,6 +475,7 @@ def _run_review(args) -> int:
 
         done_titles = list(args.done)
         missed_titles = list(args.missed)
+        counted = plan
 
         if plan is not None:
             # An explicit --done settles the plan item it names before
@@ -483,7 +484,27 @@ def _run_review(args) -> int:
             day_plans = day_module.upsert_plan(day_plans, plan)
             categories = {item.key: item.category for item in plan.items}
 
-            derived_done, derived_missed = day_module.outcome(plan)
+            # Count the day the user was actually shown. `today` and
+            # `open` hide an open plan item that is already an open
+            # commitment, because the carried copy is the one with an
+            # age. Reading the raw plan here would record that same
+            # obligation as missed on a second day, double-count it in
+            # `review week`, and report a completion rate that
+            # contradicts the screen. The stored plan keeps every item
+            # either way; this is the view, not the data.
+            #
+            # Strictly *before* the review date, and that matters: a
+            # commitment opened on this date was opened by an earlier
+            # run of this same review. Excluding those would let a
+            # correction shrink its own denominator — log 1 of 3, fix
+            # it, and the day silently becomes 2 of 2. Only work
+            # carried in from a previous day is already accounted for.
+            # `latest_review_before` compares strictly for the same
+            # kind of reason (ADR-006).
+            owed = {c.key for c in open_items(state.commitments) if c.opened_on < review_date}
+            counted = day_module.without_owed(plan, owed)
+
+            derived_done, derived_missed = day_module.outcome(counted)
             done_titles = _merge_titles(args.done, derived_done)
             missed_titles = _merge_titles(args.missed, derived_missed)
 
@@ -532,10 +553,10 @@ def _run_review(args) -> int:
                 f"  Replaced the previous review for this date "
                 f"(was {len(replaced.completed)}/{replaced.total_tasks}, {was:.0f}%)."
             )
-        if plan is not None:
-            dropped = len(plan.dropped_items)
+        if counted is not None:
+            dropped = len(counted.dropped_items)
             tail = f", {dropped} dropped and not counted" if dropped else ""
-            print(f"  Read from today's plan: {len(plan.done_items)} done{tail}.")
+            print(f"  Read from today's plan: {len(counted.done_items)} done{tail}.")
         print(f"  Completed: {len(review.completed)}/{review.total_tasks}  ({rate:.0f}%)")
 
         if closed:
